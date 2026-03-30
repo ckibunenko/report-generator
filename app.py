@@ -233,16 +233,15 @@ class PageWriter:
             badge_label = btype if btype == 'SUGGESTION' else severity
             badge_color = get_severity_color(badge_label if btype == 'SUGGESTION' else severity)
             bw = 70
-            bh = 14
-            by = self.y - row_h + 4
+            bh = 16
+            by = self.y - row_h + 3
             self.c.setFillColor(badge_color)
             self.c.roundRect(cx + 4, by, bw, bh, 3, fill=1, stroke=0)
             self.c.setFillColor(COLOR_WHITE)
             self.c.setFont('Helvetica-Bold', 8)
             dot = '\u25cf '
             label_text = f'{dot}{badge_label}' if btype != 'SUGGESTION' else 'SUGGESTION'
-            # Vertically center text: badge center - cap_height/2 ≈ by + 4
-            self.c.drawString(cx + 8, by + 4, label_text)
+            self.c.drawString(cx + 8, by + 5, label_text)
             cx += col_w[1]
 
             # Issue Area / Title
@@ -413,16 +412,18 @@ class PageWriter:
     def draw_description(self, text):
         if not text or not text.strip():
             return
+        # Normalize whitespace so pasted text flows as a single paragraph
+        text = ' '.join(text.split())
         font_size = 9
         line_h = 13
-        lines = simpleSplit(text, 'Helvetica-Oblique', font_size, self.content_w)
+        lines = simpleSplit(text, 'Helvetica', font_size, self.content_w)
         if not lines:
             return
         total_h = len(lines) * line_h + 8
         self.need(total_h)
         self.y -= 6
-        self.c.setFillColor(COLOR_NARRATIVE)
-        self.c.setFont('Helvetica-Oblique', font_size)
+        self.c.setFillColor(COLOR_TEXT)
+        self.c.setFont('Helvetica', font_size)
         for line in lines:
             self.need(line_h)
             self.c.drawString(self.margin, self.y, line)
@@ -705,9 +706,9 @@ def generate():
         severity = request.form.get(f'bug_severity_{i}', '')
         title = request.form.get(f'bug_title_{i}', '')
         area = request.form.get(f'bug_area_{i}', '')
-        what = request.form.get(f'bug_what_{i}', '')
-        where = request.form.get(f'bug_where_{i}', '')
-        how = request.form.get(f'bug_how_{i}', '')
+        what = ' '.join(request.form.get(f'bug_what_{i}', '').split())
+        where = ' '.join(request.form.get(f'bug_where_{i}', '').split())
+        how = ' '.join(request.form.get(f'bug_how_{i}', '').split())
         description = request.form.get(f'bug_description_{i}', '')
         fixed = request.form.get(f'bug_fixed_{i}', 'false') == 'true'
         fixed_build = request.form.get(f'bug_fixed_build_{i}', '')
