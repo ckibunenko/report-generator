@@ -473,8 +473,8 @@ class PageWriter:
             dw = dh / ratio
         return dw, dh
 
-    def _prepare_image(self, path):
-        """Convert image to RGB PNG in a temp file, return path."""
+    def _prepare_image(self, path, crop_aspect=None):
+        """Convert image to RGB JPEG. crop_aspect=(w/h) crops to that ratio if given."""
         with Image.open(path) as img:
             if img.mode in ('RGBA', 'LA', 'P'):
                 bg = Image.new('RGB', img.size, (255, 255, 255))
@@ -487,12 +487,23 @@ class PageWriter:
                 img = bg
             elif img.mode != 'RGB':
                 img = img.convert('RGB')
+            if crop_aspect is not None:
+                iw, ih = img.size
+                if iw / ih > crop_aspect:
+                    # wider than target: crop sides
+                    new_w = int(round(ih * crop_aspect))
+                    left = (iw - new_w) // 2
+                    img = img.crop((left, 0, left + new_w, ih))
+                elif iw / ih < crop_aspect:
+                    # taller than target: crop bottom
+                    new_h = int(round(iw / crop_aspect))
+                    img = img.crop((0, 0, iw, new_h))
             tmp_path = path + '_rgb.jpg'
             img.save(tmp_path, 'JPEG', quality=85)
         return tmp_path
 
     def _draw_one_image(self, path):
-        max_w = 480
+        max_w = int(self.content_w * 0.65)  # ~65% of content width so centering is visible
         try:
             dw, dh = self._get_image_dims(path, max_w)
             self.need(dh + 12)
@@ -508,20 +519,29 @@ class PageWriter:
             print(f'Image error {path}: {e}')
 
     def _draw_two_images(self, path1, path2):
-        max_w = 230
+        target_w = 230  # display width for each image in pts
+        max_h = PAGE_H - 2 * MARGIN - 40
         try:
-            dw1, dh1 = self._get_image_dims(path1, max_w)
-            dw2, dh2 = self._get_image_dims(path2, max_w)
-            row_h = max(dh1, dh2)
-            self.need(row_h + 12)
-            tmp1 = self._prepare_image(path1)
-            tmp2 = self._prepare_image(path2)
-            gap = (self.content_w - dw1 - dw2) / 3
+            with Image.open(path1) as img:
+                iw1, ih1 = img.size
+            with Image.open(path2) as img:
+                iw2, ih2 = img.size
+            # Heights if both scaled to target_w wide
+            dh1 = target_w * ih1 / iw1
+            dh2 = target_w * ih2 / iw2
+            # Use the shorter height so both images match; apply page cap
+            display_h = min(dh1, dh2, max_h)
+            self.need(display_h + 12)
+            # Crop each image to the uniform target_w × display_h aspect ratio
+            crop_aspect = target_w / display_h
+            tmp1 = self._prepare_image(path1, crop_aspect=crop_aspect)
+            tmp2 = self._prepare_image(path2, crop_aspect=crop_aspect)
+            gap = (self.content_w - target_w * 2) / 3
             x1 = self.margin + gap
-            x2 = x1 + dw1 + gap
-            self.c.drawImage(tmp1, x1, self.y - dh1, width=dw1, height=dh1)
-            self.c.drawImage(tmp2, x2, self.y - dh2, width=dw2, height=dh2)
-            self.y -= row_h + 10
+            x2 = x1 + target_w + gap
+            self.c.drawImage(tmp1, x1, self.y - display_h, width=target_w, height=display_h)
+            self.c.drawImage(tmp2, x2, self.y - display_h, width=target_w, height=display_h)
+            self.y -= display_h + 10
             for tmp in (tmp1, tmp2):
                 try:
                     os.remove(tmp)
@@ -550,6 +570,7 @@ class PageWriter:
         font_size = 10
         line_h = 15
         if text and text.strip():
+            text = ' '.join(text.split())
             lines = simpleSplit(text, 'Helvetica', font_size, self.content_w)
             self.c.setFillColor(COLOR_TEXT)
             self.c.setFont('Helvetica', font_size)
@@ -663,7 +684,6 @@ def build_pdf(data, uploaded_files, output_path):
             pw.c.setFillColor(COLOR_NARRATIVE)
             pw.c.drawString(MARGIN, pw.y, sig)
 
-    pw.draw_page_number(page_num)
     c.save()
 
 
@@ -679,7 +699,7 @@ def generate():
     app_name = request.form.get('app_name', 'App').strip()
     app_desc = request.form.get('app_desc', '').strip()
     device = request.form.get('device', '').strip()
-    assessment = request.form.get('assessment', '').strip()
+    assessment = ' '.join(request.form.get('assessment', '').split())
 
     # Coverage rows
     coverage_areas = request.form.getlist('coverage_area[]')
@@ -709,7 +729,7 @@ def generate():
         what = ' '.join(request.form.get(f'bug_what_{i}', '').split())
         where = ' '.join(request.form.get(f'bug_where_{i}', '').split())
         how = ' '.join(request.form.get(f'bug_how_{i}', '').split())
-        description = request.form.get(f'bug_description_{i}', '')
+        description = ' '.join(request.form.get(f'bug_description_{i}', '').split())
         fixed = request.form.get(f'bug_fixed_{i}', 'false') == 'true'
         fixed_build = request.form.get(f'bug_fixed_build_{i}', '')
 
