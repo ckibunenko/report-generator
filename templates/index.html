@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QA Report Generator</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="app-header-left">
+        <span class="app-logo">QA</span>
+        <div>
+          <h1>Report Generator</h1>
+          <p>Generate professional PDF QA reports</p>
+        </div>
+      </div>
+      <div class="app-header-right">
+        <span class="tester-badge">Aleksandar Parabucki · Senior QA Engineer</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-container">
+    <form id="reportForm" enctype="multipart/form-data">
+
+      <!-- ── Section 1: Report Info ───────────────────────────────────── -->
+      <section class="form-section">
+        <div class="section-header">
+          <span class="section-number">01</span>
+          <h2>Report Info</h2>
+        </div>
+        <div class="section-body">
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="app_name">App Name</label>
+              <input type="text" id="app_name" name="app_name" placeholder="e.g. MyFitness" required />
+            </div>
+            <div class="form-group">
+              <label for="app_desc">App Description</label>
+              <input type="text" id="app_desc" name="app_desc" placeholder="e.g. Calorie Tracker · iOS App Testing via TestFlight" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="device">Device</label>
+            <input type="text" id="device" name="device" placeholder="e.g. iPhone 16 Pro Max · iOS 26.3.1" />
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Section 2: Test Coverage ───────────────────────────────────── -->
+      <section class="form-section">
+        <div class="section-header">
+          <span class="section-number">02</span>
+          <h2>Test Coverage Areas</h2>
+        </div>
+        <div class="section-body">
+          <div class="coverage-table">
+            <div class="coverage-table-header">
+              <span>Area</span>
+              <span>Scope</span>
+              <span></span>
+            </div>
+            <div id="coverageRows">
+              <!-- Pre-populated rows -->
+            </div>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="addCoverageRow()">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Add Row
+          </button>
+        </div>
+      </section>
+
+      <!-- ── Section 3: Bugs ────────────────────────────────────────────── -->
+      <section class="form-section">
+        <div class="section-header">
+          <span class="section-number">03</span>
+          <h2>Bugs &amp; Issues</h2>
+          <span id="bugCount" class="badge-count">0</span>
+        </div>
+        <div class="section-body">
+          <div id="bugsList"></div>
+          <button type="button" class="btn btn-primary" onclick="addBug()">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Add Bug
+          </button>
+        </div>
+      </section>
+
+      <!-- ── Section 4: Overall Assessment ─────────────────────────────── -->
+      <section class="form-section">
+        <div class="section-header">
+          <span class="section-number">04</span>
+          <h2>Overall Assessment</h2>
+        </div>
+        <div class="section-body">
+          <div class="form-group">
+            <label for="assessment">Assessment Text</label>
+            <textarea id="assessment" name="assessment" rows="6"
+              placeholder="Enter your overall assessment of the app quality, stability, and readiness for release..."></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Generate Button ────────────────────────────────────────────── -->
+      <div class="generate-bar">
+        <div class="generate-bar-inner">
+          <div class="generate-info">
+            <strong id="summaryText">Ready to generate</strong>
+            <span id="summarySubtext">Fill in the form above and click Generate</span>
+          </div>
+          <button type="button" class="btn btn-generate" onclick="generateReport()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="2"/>
+              <polyline points="14,2 14,8 20,8" stroke="currentColor" stroke-width="2"/>
+              <line x1="16" y1="13" x2="8" y2="13" stroke="currentColor" stroke-width="2"/>
+              <line x1="16" y1="17" x2="8" y2="17" stroke="currentColor" stroke-width="2"/>
+              <polyline points="10,9 9,9 8,9" stroke="currentColor" stroke-width="2"/>
+            </svg>
+            Generate PDF Report
+          </button>
+        </div>
+      </div>
+
+      <!-- Hidden: bug count for backend -->
+      <input type="hidden" name="bug_count" id="bugCountInput" value="0" />
+    </form>
+  </main>
+
+  <!-- Loading overlay -->
+  <div id="loadingOverlay" class="loading-overlay hidden">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <p>Generating PDF report&hellip;</p>
+      <span>This may take a moment</span>
+    </div>
+  </div>
+
+  <script>
+  // ── State ───────────────────────────────────────────────────────────────
+  let bugs = [];
+  let bugIdCounter = 0;
+  let screenshotIdCounter = 0;
+
+  const DEFAULT_COVERAGE = [
+    { area: 'Onboarding flow',    scope: 'First launch, account creation, onboarding screens' },
+    { area: 'Feature screens',    scope: 'Core functionality, navigation, interactions' },
+    { area: 'Paywall / pricing',  scope: 'Subscription screens, pricing display, purchase flow' },
+    { area: 'Food logging',       scope: 'Log entry, search, barcode scanning, macros' },
+    { area: 'Progress & tracking',scope: 'Charts, streaks, history, data accuracy' },
+    { area: 'UI & text',          scope: 'Layout, typography, spelling, dark/light mode' },
+  ];
+
+  // ── Init ────────────────────────────────────────────────────────────────
+  window.addEventListener('DOMContentLoaded', () => {
+    DEFAULT_COVERAGE.forEach(r => addCoverageRow(r.area, r.scope));
+    updateSummary();
+  });
+
+  // ── Coverage Rows ────────────────────────────────────────────────────────
+  function addCoverageRow(area = '', scope = '') {
+    const container = document.getElementById('coverageRows');
+    const row = document.createElement('div');
+    row.className = 'coverage-row';
+    row.innerHTML = `
+      <input type="text" name="coverage_area[]" value="${escHtml(area)}" placeholder="Area name" />
+      <input type="text" name="coverage_scope[]" value="${escHtml(scope)}" placeholder="What was tested" />
+      <button type="button" class="btn-icon btn-remove" onclick="removeRow(this)" title="Remove row">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    `;
+    container.appendChild(row);
+  }
+
+  function removeRow(btn) {
+    btn.closest('.coverage-row').remove();
+  }
+
+  // ── Bugs ─────────────────────────────────────────────────────────────────
+  function addBug() {
+    const id = bugIdCounter++;
+    const bug = {
+      id,
+      index: bugs.length,
+      type: 'BUG',
+      severity: 'MEDIUM',
+      title: '',
+      area: '',
+      what: '',
+      where: '',
+      how: '',
+      description: '',
+      fixed: false,
+      fixed_build: '',
+      screenshots: [],
+    };
+    bugs.push(bug);
+    renderBugs();
+    updateSummary();
+    // Scroll to new bug
+    setTimeout(() => {
+      const el = document.getElementById(`bug-card-${id}`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }
+
+  function removeBug(id) {
+    bugs = bugs.filter(b => b.id !== id);
+    renderBugs();
+    updateSummary();
+  }
+
+  function moveBug(id, dir) {
+    const idx = bugs.findIndex(b => b.id === id);
+    if (idx < 0) return;
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= bugs.length) return;
+    [bugs[idx], bugs[newIdx]] = [bugs[newIdx], bugs[idx]];
+    renderBugs();
+  }
+
+  function saveBugField(id, field, value) {
+    const bug = bugs.find(b => b.id === id);
+    if (bug) {
+      bug[field] = value;
+      if (field === 'type') {
+        // Re-render to update severity state
+        renderBugs();
+      }
+      if (field === 'fixed') {
+        renderBugs();
+      }
+      updateSummary();
+    }
+  }
+
+  function renderBugs() {
+    const container = document.getElementById('bugsList');
+    container.innerHTML = '';
+    bugs.forEach((bug, idx) => {
+      container.appendChild(createBugCard(bug, idx));
+      // Restore screenshots persisted in bug state
+      if (bug.screenshots.length > 0) {
+        restoreScreenshots(bug.id);
+      }
+    });
+    document.getElementById('bugCountInput').value = bugs.length;
+    document.getElementById('bugCount').textContent = bugs.length;
+  }
+
+  function restoreScreenshots(bugId) {
+    const bug = bugs.find(b => b.id === bugId);
+    if (!bug) return;
+    const previewContainer = document.getElementById(`previews-${bugId}`);
+    if (!previewContainer) return;
+    bug.screenshots.forEach(s => {
+      const prev = document.createElement('div');
+      prev.className = 'screenshot-preview-item';
+      prev.dataset.ssId = s.id;
+      prev.innerHTML = `
+        <img src="${s.dataUrl}" alt="Screenshot" />
+        <button type="button" class="preview-remove" onclick="removeScreenshot(this, ${bugId}, ${s.id})">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      `;
+      previewContainer.appendChild(prev);
+    });
+  }
+
+  function createBugCard(bug, displayIdx) {
+    const card = document.createElement('div');
+    card.className = `bug-card sev-${(bug.type === 'SUGGESTION' ? 'suggestion' : bug.severity).toLowerCase()}${bug.fixed ? ' is-fixed' : ''}`;
+    card.id = `bug-card-${bug.id}`;
+
+    const isSuggestion = bug.type === 'SUGGESTION';
+    const sevBadge = isSuggestion
+      ? `<span class="badge badge-suggestion">SUGGESTION</span>`
+      : `<span class="badge badge-${bug.severity.toLowerCase()}">&bull; ${bug.severity}</span>`;
+
+    card.innerHTML = `
+      <div class="bug-card-header">
+        <div class="bug-card-header-left">
+          <span class="bug-number">#${displayIdx + 1}</span>
+          ${sevBadge}
+          <span class="bug-title-preview">${escHtml(bug.title) || '<em>Untitled</em>'}</span>
+          ${bug.fixed ? '<span class="fixed-tag">&#10003; FIXED</span>' : ''}
+        </div>
+        <div class="bug-card-header-right">
+          <button type="button" class="btn-icon" onclick="moveBug(${bug.id}, -1)" title="Move up" ${displayIdx === 0 ? 'disabled' : ''}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 9l5-5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button type="button" class="btn-icon" onclick="moveBug(${bug.id}, 1)" title="Move down" ${displayIdx === bugs.length - 1 ? 'disabled' : ''}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 5l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button type="button" class="btn-icon btn-expand" onclick="toggleBugExpand(${bug.id})" title="Expand/Collapse">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 5l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button type="button" class="btn-icon btn-remove" onclick="removeBug(${bug.id})" title="Remove bug">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="bug-card-body" id="bug-body-${bug.id}">
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Bug Type</label>
+            <select name="bug_type_${displayIdx}" onchange="saveBugField(${bug.id}, 'type', this.value)">
+              <option value="BUG" ${bug.type === 'BUG' ? 'selected' : ''}>BUG</option>
+              <option value="SUGGESTION" ${bug.type === 'SUGGESTION' ? 'selected' : ''}>SUGGESTION</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Severity</label>
+            <select name="bug_severity_${displayIdx}" ${isSuggestion ? 'disabled' : ''} onchange="saveBugField(${bug.id}, 'severity', this.value)">
+              <option value="HIGH" ${bug.severity === 'HIGH' ? 'selected' : ''}>HIGH</option>
+              <option value="MEDIUM" ${bug.severity === 'MEDIUM' ? 'selected' : ''}>MEDIUM</option>
+              <option value="LOW" ${bug.severity === 'LOW' ? 'selected' : ''}>LOW</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Title <span class="hint">One sentence description</span></label>
+            <input type="text" name="bug_title_${displayIdx}" value="${escHtml(bug.title)}" placeholder="e.g. App crashes when logging meal without internet"
+              oninput="saveBugField(${bug.id}, 'title', this.value)" />
+          </div>
+          <div class="form-group">
+            <label>Area <span class="hint">e.g. Food log, Onboarding</span></label>
+            <input type="text" name="bug_area_${displayIdx}" value="${escHtml(bug.area)}" placeholder="e.g. Food Logging"
+              oninput="saveBugField(${bug.id}, 'area', this.value)" />
+          </div>
+        </div>
+        <div class="wwh-grid">
+          <div class="form-group wwh-block wwh-what">
+            <label><span class="wwh-label">WHAT</span> What is the issue?</label>
+            <textarea name="bug_what_${displayIdx}" rows="3" placeholder="Describe what is wrong..."
+              oninput="saveBugField(${bug.id}, 'what', this.value)">${escHtml(bug.what)}</textarea>
+          </div>
+          <div class="form-group wwh-block wwh-where">
+            <label><span class="wwh-label">WHERE</span> Where does it occur?</label>
+            <textarea name="bug_where_${displayIdx}" rows="3" placeholder="Screen, flow, navigation path..."
+              oninput="saveBugField(${bug.id}, 'where', this.value)">${escHtml(bug.where)}</textarea>
+          </div>
+          <div class="form-group wwh-block wwh-how">
+            <label><span class="wwh-label">HOW</span> How to reproduce?</label>
+            <textarea name="bug_how_${displayIdx}" rows="3" placeholder="Step-by-step reproduction steps..."
+              oninput="saveBugField(${bug.id}, 'how', this.value)">${escHtml(bug.how)}</textarea>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Description <span class="hint">Narrative paragraph</span></label>
+          <textarea name="bug_description_${displayIdx}" rows="3" placeholder="Additional context, impact, notes..."
+            oninput="saveBugField(${bug.id}, 'description', this.value)">${escHtml(bug.description)}</textarea>
+        </div>
+        <div class="fixed-section ${bug.fixed ? 'expanded' : ''}">
+          <div class="fixed-row">
+            <label class="checkbox-label">
+              <input type="checkbox" name="bug_fixed_${displayIdx}" value="true" ${bug.fixed ? 'checked' : ''}
+                onchange="saveBugField(${bug.id}, 'fixed', this.checked)" />
+              <span class="checkbox-custom"></span>
+              Marked as Fixed
+            </label>
+            <input type="text" name="bug_fixed_build_${displayIdx}" class="fixed-build-input"
+              value="${escHtml(bug.fixed_build)}" placeholder="Fixed in build (e.g. 2.1 (45))"
+              style="${bug.fixed ? '' : 'display:none'}"
+              oninput="saveBugField(${bug.id}, 'fixed_build', this.value)" />
+          </div>
+        </div>
+        <div class="form-group screenshot-group">
+          <label>
+            Screenshots
+            <span class="hint">iPhone screenshots, multiple allowed</span>
+          </label>
+          <div class="screenshot-drop-zone" id="drop-zone-${bug.id}"
+            ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)"
+            ondrop="handleDrop(event, ${bug.id})">
+            <input type="file" id="ss-input-${bug.id}"
+              accept="image/*" multiple style="display:none"
+              onchange="handleFileSelect(event, ${bug.id})" />
+            <div class="drop-zone-inner" onclick="document.getElementById('ss-input-${bug.id}').click()">
+              <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                <rect x="2" y="5" width="18" height="28" rx="3" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M8 15h6M11 12v6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M22 10l7 3-7 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span>Drop screenshots here or <strong>click to upload</strong></span>
+              <small>PNG, JPG — iPhone screenshots recommended</small>
+            </div>
+            <div class="screenshot-previews" id="previews-${bug.id}"></div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Expand by default for newly added bugs
+    const body = card.querySelector(`#bug-body-${bug.id}`);
+    body.style.display = 'block';
+
+    return card;
+  }
+
+  function toggleBugExpand(id) {
+    const body = document.getElementById(`bug-body-${id}`);
+    const isVisible = body.style.display !== 'none';
+    body.style.display = isVisible ? 'none' : 'block';
+    const card = document.getElementById(`bug-card-${id}`);
+    card.classList.toggle('collapsed', isVisible);
+  }
+
+  // ── File Handling ──────────────────────────────────────────────────────
+  function handleDragOver(e) {
+    e.preventDefault();
+    e.currentTarget.classList.add('drag-over');
+  }
+
+  function handleDragLeave(e) {
+    e.currentTarget.classList.remove('drag-over');
+  }
+
+  function handleDrop(e, bugId) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-over');
+    addFilesToBug(bugId, Array.from(e.dataTransfer.files));
+  }
+
+  function handleFileSelect(e, bugId) {
+    // Capture files before resetting the input
+    const files = Array.from(e.target.files);
+    // Reset so selecting the same file again triggers onchange
+    e.target.value = '';
+    addFilesToBug(bugId, files);
+  }
+
+  function addFilesToBug(bugId, files) {
+    const bug = bugs.find(b => b.id === bugId);
+    if (!bug) return;
+    const previewContainer = document.getElementById(`previews-${bugId}`);
+
+    files.forEach(file => {
+      if (!file.type.startsWith('image/')) return;
+
+      const ssId = screenshotIdCounter++;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target.result;
+        // Persist in bug state so it survives re-renders
+        bug.screenshots.push({ id: ssId, file, dataUrl });
+
+        // Add preview
+        const prev = document.createElement('div');
+        prev.className = 'screenshot-preview-item';
+        prev.dataset.ssId = ssId;
+        prev.innerHTML = `
+          <img src="${dataUrl}" alt="Screenshot" />
+          <button type="button" class="preview-remove" onclick="removeScreenshot(this, ${bugId}, ${ssId})">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+        `;
+        previewContainer.appendChild(prev);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function removeScreenshot(btn, bugId, ssId) {
+    const bug = bugs.find(b => b.id === bugId);
+    if (bug) {
+      bug.screenshots = bug.screenshots.filter(s => s.id !== ssId);
+    }
+    btn.closest('.screenshot-preview-item').remove();
+  }
+
+  // ── Form Submission ────────────────────────────────────────────────────
+  function generateReport() {
+    const appName = document.getElementById('app_name').value.trim();
+    if (!appName) {
+      showToast('Please enter an App Name', 'error');
+      document.getElementById('app_name').focus();
+      return;
+    }
+
+    showLoading(true);
+
+    const form = document.getElementById('reportForm');
+    const formData = new FormData(form);
+
+    // Sync bug data (ensure hidden fields are up to date)
+    formData.set('bug_count', bugs.length);
+
+    // Re-add fixed checkboxes (unchecked checkboxes are not included in FormData)
+    bugs.forEach((bug, idx) => {
+      formData.set(`bug_fixed_${idx}`, bug.fixed ? 'true' : 'false');
+    });
+
+    // Manually add screenshots from state (file inputs have no name to avoid auto-inclusion)
+    bugs.forEach((bug, idx) => {
+      bug.screenshots.forEach(s => {
+        formData.append(`bug_screenshots_${idx}`, s.file, s.file.name);
+      });
+    });
+
+    fetch('/generate', {
+      method: 'POST',
+      body: formData,
+    })
+    .then(res => {
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      return res.blob();
+    })
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const appName = document.getElementById('app_name').value.trim() || 'Report';
+      a.href = url;
+      a.download = `QA_Report_${appName.replace(/\s+/g, '_')}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showLoading(false);
+      showToast('Report generated successfully!', 'success');
+    })
+    .catch(err => {
+      showLoading(false);
+      showToast('Failed to generate report: ' + err.message, 'error');
+      console.error(err);
+    });
+  }
+
+  // ── UI Helpers ──────────────────────────────────────────────────────────
+  function showLoading(show) {
+    document.getElementById('loadingOverlay').classList.toggle('hidden', !show);
+  }
+
+  function showToast(msg, type = 'info') {
+    const existing = document.querySelector('.toast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = msg;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.classList.add('show'), 10);
+    setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => toast.remove(), 300);
+    }, 3500);
+  }
+
+  function updateSummary() {
+    const appName = document.getElementById('app_name').value.trim() || 'Unnamed App';
+    const bugCount = bugs.length;
+    const fixedCount = bugs.filter(b => b.fixed).length;
+
+    document.getElementById('summaryText').textContent =
+      `${appName} — ${bugCount} bug${bugCount !== 1 ? 's' : ''}${fixedCount > 0 ? `, ${fixedCount} fixed` : ''}`;
+    document.getElementById('summarySubtext').textContent =
+      bugCount === 0 ? 'Add bugs above before generating' : 'Ready to generate PDF';
+  }
+
+  document.getElementById('app_name').addEventListener('input', updateSummary);
+
+  function escHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+  </script>
+</body>
+</html>
