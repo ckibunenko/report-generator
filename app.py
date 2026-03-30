@@ -241,7 +241,7 @@ class PageWriter:
             self.c.setFont('Helvetica-Bold', 8)
             dot = '\u25cf '
             label_text = f'{dot}{badge_label}' if btype != 'SUGGESTION' else 'SUGGESTION'
-            self.c.drawString(cx + 8, by + 5, label_text)
+            self.c.drawCentredString(cx + 4 + bw / 2, by + 5, label_text)
             cx += col_w[1]
 
             # Issue Area / Title
