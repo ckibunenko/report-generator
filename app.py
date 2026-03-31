@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import json
 from datetime import datetime
@@ -52,6 +53,12 @@ def get_severity_color(severity):
     return SEVERITY_COLORS.get(severity.upper(), COLOR_SUGGESTION)
 
 
+def clean_text(text):
+    """Replace all newline variants with a single space and collapse whitespace."""
+    text = text.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
+    return ' '.join(text.split())
+
+
 # ─── PageWriter ───────────────────────────────────────────────────────────────
 class PageWriter:
     def __init__(self, c, page_w, page_h, margin):
@@ -61,15 +68,36 @@ class PageWriter:
         self.margin = margin
         self.content_w = page_w - 2 * margin
         self.y = page_h - margin
+        self.page_num = 1
+
+    def _draw_footer(self, is_last=False):
+        self.c.setFont('Helvetica', 8)
+        self.c.setFillColor(COLOR_NARRATIVE)
+        self.c.drawRightString(
+            self.margin + self.content_w,
+            self.margin - 18,
+            f'Page {self.page_num}'
+        )
+        if is_last:
+            sig = 'Aleksandar Parabucki \u00b7 Senior QA Engineer \u00b7 aleksandar.parabucki@gmail.com'
+            self.c.drawString(self.margin, self.margin - 18, sig)
+
+    def finalize(self):
+        """Draw footer on the last page without calling showPage."""
+        self._draw_footer(is_last=True)
 
     def need(self, height):
         """If not enough space, create new page and reset Y."""
         if self.y - height < self.margin + 40:
+            self._draw_footer()
             self.c.showPage()
+            self.page_num += 1
             self.y = self.page_h - self.margin
 
     def new_page(self):
+        self._draw_footer()
         self.c.showPage()
+        self.page_num += 1
         self.y = self.page_h - self.margin
 
     # ── Cover header ──────────────────────────────────────────────────────────
@@ -89,7 +117,8 @@ class PageWriter:
 
         # Subtitle
         self.c.setFont('Helvetica', 10)
-        self.c.drawString(x + 12, top - 46, f'{app_name} \u2014 {app_desc}')
+        subtitle = f'{app_name} \u2014 {app_desc}' if app_desc else app_name
+        self.c.drawString(x + 12, top - 46, subtitle)
 
         # Right side: tester / date / device
         date_str = datetime.now().strftime('%d.%m.%Y')
@@ -343,6 +372,23 @@ class PageWriter:
         self.y -= bar_h + 4
 
     # ── WHAT / WHERE / HOW block ──────────────────────────────────────────────
+    def _wwh_height(self, what, where, how, is_fixed=False, build_str=''):
+        label_w = 55
+        text_x_offset = 6
+        text_w = self.content_w - label_w - text_x_offset - 4
+        font_size = 9
+        line_h = 13
+        pad = 6
+        total = 6 * 2  # outer padding
+        for text in (what, where, how):
+            lines = simpleSplit(text, 'Helvetica', font_size, text_w)
+            if not lines:
+                lines = ['']
+            total += max(len(lines), 1) * line_h + pad * 2 + 4
+        if is_fixed and build_str:
+            total += 22
+        return total
+
     def draw_what_where_how(self, what, where, how, is_fixed=False, build_str=''):
         label_w = 55
         text_x_offset = 6          # pixels from label_w to text start
@@ -357,10 +403,6 @@ class PageWriter:
                 lines = ['']
             return max(len(lines), 1) * line_h + pad * 2
 
-        # Normalize all fields — strip every newline/CR so simpleSplit never sees them
-        what = ' '.join(what.split())
-        where = ' '.join(where.split())
-        how = ' '.join(how.split())
         blocks = [('WHAT:', what), ('WHERE:', where), ('HOW:', how)]
         total_h = sum(block_height(t) for _, t in blocks) + 6 * 2
 
@@ -417,42 +459,40 @@ class PageWriter:
     def draw_description(self, text):
         if not text or not text.strip():
             return
-        # Normalize whitespace so pasted text flows as a single paragraph
-        text = ' '.join(text.split())
         font_size = 9
         line_h = 13
         lines = simpleSplit(text, 'Helvetica', font_size, self.content_w)
         if not lines:
             return
-        total_h = len(lines) * line_h + 8
+        total_h = len(lines) * line_h + 6
         self.need(total_h)
-        self.y -= 6
+        self.y -= 4
         self.c.setFillColor(COLOR_TEXT)
         self.c.setFont('Helvetica', font_size)
         for line in lines:
             self.need(line_h)
             self.c.drawString(self.margin, self.y, line)
             self.y -= line_h
-        self.y -= 4
+        self.y -= 2
 
     # ── Fixed verified note ───────────────────────────────────────────────────
     def draw_fixed_note(self, build_str):
         if not build_str:
             return
-        self.need(20)
-        self.y -= 4
+        self.need(16)
+        self.y -= 2
         note = f'\u2713 Verified fixed in build {build_str}'
         self.c.setFont('Helvetica-Oblique', 9)
         self.c.setFillColor(COLOR_STATUS_GREEN)
         self.c.drawString(self.margin, self.y, note)
-        self.y -= 14
+        self.y -= 8
 
     # ── Screenshots ───────────────────────────────────────────────────────────
     def draw_screenshots(self, image_paths):
         if not image_paths:
             return
 
-        self.y -= 8
+        self.y -= 4
 
         def _is_portrait(path):
             try:
@@ -530,7 +570,7 @@ class PageWriter:
             tmp = self._prepare_image(path)
             cx = self.margin + (self.content_w - dw) / 2
             self.c.drawImage(tmp, cx, self.y - dh, width=dw, height=dh)
-            self.y -= dh + 10
+            self.y -= dh + 6
             try:
                 os.remove(tmp)
             except Exception:
@@ -561,7 +601,7 @@ class PageWriter:
             x2 = x1 + target_w + gap
             self.c.drawImage(tmp1, x1, self.y - display_h, width=target_w, height=display_h)
             self.c.drawImage(tmp2, x2, self.y - display_h, width=target_w, height=display_h)
-            self.y -= display_h + 10
+            self.y -= display_h + 6
             for tmp in (tmp1, tmp2):
                 try:
                     os.remove(tmp)
@@ -572,12 +612,12 @@ class PageWriter:
 
     # ── Separator line ────────────────────────────────────────────────────────
     def draw_separator(self):
-        self.y -= 12
+        self.y -= 5
         self.need(2)
         self.c.setStrokeColor(COLOR_SEPARATOR)
         self.c.setLineWidth(0.8)
         self.c.line(self.margin, self.y, self.margin + self.content_w, self.y)
-        self.y -= 12
+        self.y -= 9
 
     # ── Overall Assessment page ───────────────────────────────────────────────
     def draw_overall_assessment(self, text):
@@ -588,7 +628,7 @@ class PageWriter:
         font_size = 10
         line_h = 15
         if text and text.strip():
-            text = ' '.join(text.split())
+            text = clean_text(text)
             lines = simpleSplit(text, 'Helvetica', font_size, self.content_w)
             self.c.setFillColor(COLOR_TEXT)
             self.c.setFont('Helvetica', font_size)
@@ -596,25 +636,6 @@ class PageWriter:
                 self.need(line_h)
                 self.c.drawString(self.margin, self.y, line)
                 self.y -= line_h
-
-        self.y -= 20
-        self.need(30)
-        date_str = datetime.now().strftime('%d.%m.%Y')
-        sig = f'Aleksandar Parabucki \u00b7 Senior QA Engineer \u00b7 {date_str} \u00b7 aleksandar.parabucki@gmail.com'
-        self.c.setFont('Helvetica', 9)
-        self.c.setFillColor(COLOR_NARRATIVE)
-        self.c.drawString(self.margin, self.y, sig)
-        self.y -= 20
-
-    # ── Page number footer ────────────────────────────────────────────────────
-    def draw_page_number(self, page_num):
-        self.c.setFont('Helvetica', 8)
-        self.c.setFillColor(COLOR_NARRATIVE)
-        self.c.drawRightString(
-            self.margin + self.content_w,
-            self.margin - 18,
-            f'Page {page_num}'
-        )
 
 
 # ─── PDF Builder ──────────────────────────────────────────────────────────────
@@ -629,8 +650,6 @@ def build_pdf(data, uploaded_files, output_path):
     bugs = data.get('bugs', [])
     assessment = data.get('assessment', '')
 
-    page_num = 1
-
     # ── Page 1: Cover ────────────────────────────────────────────────────────
     pw.draw_cover_header(app_name, app_desc, device)
 
@@ -640,8 +659,6 @@ def build_pdf(data, uploaded_files, output_path):
     if bugs:
         pw.draw_section_title('Bug Summary', top_pad=14, bot_pad=6)
         pw.draw_bug_summary_table(bugs)
-
-    pw.draw_page_number(page_num)
 
     # ── Pages 2+: Bug Details ─────────────────────────────────────────────────
     for idx, bug in enumerate(bugs):
@@ -657,18 +674,15 @@ def build_pdf(data, uploaded_files, output_path):
         build_str = bug.get('fixed_build', '')
         screenshots = uploaded_files.get(f'bug_{idx}', [])
 
-        # Ensure header + start of content always land on the same page.
-        # bar_h=32 + y_offset=4 = 36; separator = 24; min WHAT block = 80
+        # Ensure header + WWH content always land on the same page.
         header_h = 36
-        sep_h = 24
-        min_content = 80
+        sep_h = 14
+        wwh_h = pw._wwh_height(what, where, how, is_fixed=is_fixed, build_str=build_str)
 
         if idx == 0:
-            pw.need(header_h + min_content)
+            pw.need(header_h + wwh_h)
         else:
-            # If separator + header + minimum content won't fit, go to a new page
-            # (skip the separator — it belongs with the preceding content, not here)
-            if pw.y - (sep_h + header_h + min_content) < MARGIN + 40:
+            if pw.y - (sep_h + header_h + wwh_h) < MARGIN + 40:
                 pw.new_page()
             else:
                 pw.draw_separator()
@@ -689,9 +703,10 @@ def build_pdf(data, uploaded_files, output_path):
         if screenshots:
             pw.draw_screenshots(screenshots)
 
-    # ── Last page: Overall Assessment (always rendered with heading + signature) ─
+    # ── Last page: Overall Assessment ────────────────────────────────────────
     pw.draw_overall_assessment(assessment)
 
+    pw.finalize()
     c.save()
 
 
@@ -705,9 +720,11 @@ def index():
 def generate():
     # Parse form data
     app_name = request.form.get('app_name', 'App').strip()
+    # Strip accidental "QA Test Report — " prefix if user typed the full title
+    app_name = re.sub(r'^QA\s+Test\s+Report\s*[\u2014\-]\s*', '', app_name).strip() or 'App'
     app_desc = request.form.get('app_desc', '').strip()
     device = request.form.get('device', '').strip()
-    assessment = ' '.join(request.form.get('assessment', '').split())
+    assessment = clean_text(request.form.get('assessment', ''))
 
     # Coverage rows
     coverage_areas = request.form.getlist('coverage_area[]')
@@ -734,10 +751,10 @@ def generate():
         severity = request.form.get(f'bug_severity_{i}', '')
         title = request.form.get(f'bug_title_{i}', '')
         area = request.form.get(f'bug_area_{i}', '')
-        what = ' '.join(request.form.get(f'bug_what_{i}', '').split())
-        where = ' '.join(request.form.get(f'bug_where_{i}', '').split())
-        how = ' '.join(request.form.get(f'bug_how_{i}', '').split())
-        description = ' '.join(request.form.get(f'bug_description_{i}', '').split())
+        what = clean_text(request.form.get(f'bug_what_{i}', ''))
+        where = clean_text(request.form.get(f'bug_where_{i}', ''))
+        how = clean_text(request.form.get(f'bug_how_{i}', ''))
+        description = clean_text(request.form.get(f'bug_description_{i}', ''))
         fixed = request.form.get(f'bug_fixed_{i}', 'false') == 'true'
         fixed_build = request.form.get(f'bug_fixed_build_{i}', '')
 
