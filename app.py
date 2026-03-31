@@ -229,19 +229,19 @@ class PageWriter:
             self.c.drawString(cx + 6, self.y - row_h + 7, num_str)
             cx += col_w[0]
 
-            # Type/Severity badge
+            # Type/Severity badge — same style as header bar: 9pt font, dynamic width
             badge_label = btype if btype == 'SUGGESTION' else severity
             badge_color = get_severity_color(badge_label if btype == 'SUGGESTION' else severity)
-            bw = 70
+            dot = '\u25cf '
+            label_text = f'{dot}{badge_label}' if btype != 'SUGGESTION' else 'SUGGESTION'
             bh = 16
             by = self.y - row_h + 3
+            self.c.setFont('Helvetica-Bold', 9)
+            bw = self.c.stringWidth(label_text, 'Helvetica-Bold', 9) + 12
             self.c.setFillColor(badge_color)
             self.c.roundRect(cx + 4, by, bw, bh, 3, fill=1, stroke=0)
             self.c.setFillColor(COLOR_WHITE)
-            self.c.setFont('Helvetica-Bold', 8)
-            dot = '\u25cf '
-            label_text = f'{dot}{badge_label}' if btype != 'SUGGESTION' else 'SUGGESTION'
-            self.c.drawCentredString(cx + 4 + bw / 2, by + 5, label_text)
+            self.c.drawString(cx + 4 + 6, by + 5, label_text)
             cx += col_w[1]
 
             # Issue Area / Title
@@ -345,7 +345,8 @@ class PageWriter:
     # ── WHAT / WHERE / HOW block ──────────────────────────────────────────────
     def draw_what_where_how(self, what, where, how, is_fixed=False, build_str=''):
         label_w = 55
-        text_w = self.content_w - label_w - 4
+        text_x_offset = 6          # pixels from label_w to text start
+        text_w = self.content_w - label_w - text_x_offset - 4  # available from draw pos to right margin
         font_size = 9
         line_h = 13
         pad = 6
@@ -356,6 +357,10 @@ class PageWriter:
                 lines = ['']
             return max(len(lines), 1) * line_h + pad * 2
 
+        # Normalize all fields — strip every newline/CR so simpleSplit never sees them
+        what = ' '.join(what.split())
+        where = ' '.join(where.split())
+        how = ' '.join(how.split())
         blocks = [('WHAT:', what), ('WHERE:', where), ('HOW:', how)]
         total_h = sum(block_height(t) for _, t in blocks) + 6 * 2
 
@@ -389,7 +394,7 @@ class PageWriter:
             self.c.setFont('Helvetica', font_size)
             ty = self.y - pad
             for line in lines:
-                self.c.drawString(x + label_w + 6, ty - line_h + 3, line)
+                self.c.drawString(x + label_w + text_x_offset, ty - line_h + 3, line)
                 ty -= line_h
 
             self.y -= bh + 4
@@ -449,15 +454,27 @@ class PageWriter:
 
         self.y -= 8
 
-        # Process in pairs
+        def _is_portrait(path):
+            try:
+                with Image.open(path) as img:
+                    iw, ih = img.size
+                return ih > iw
+            except Exception:
+                return True  # treat unknown as portrait
+
         i = 0
         while i < len(image_paths):
-            pair = image_paths[i:i+2]
-            if len(pair) == 1:
-                self._draw_one_image(pair[0])
+            path1 = image_paths[i]
+            # Only pair two consecutive portraits side-by-side;
+            # landscape/square images always display full-width one at a time
+            if (_is_portrait(path1)
+                    and i + 1 < len(image_paths)
+                    and _is_portrait(image_paths[i + 1])):
+                self._draw_two_images(path1, image_paths[i + 1])
+                i += 2
             else:
-                self._draw_two_images(pair[0], pair[1])
-            i += 2
+                self._draw_one_image(path1)
+                i += 1
 
     def _get_image_dims(self, path, max_w):
         """Return (display_w, display_h) preserving aspect ratio."""
@@ -503,8 +520,11 @@ class PageWriter:
         return tmp_path
 
     def _draw_one_image(self, path):
-        max_w = int(self.content_w * 0.65)  # ~65% of content width so centering is visible
         try:
+            with Image.open(path) as img:
+                iw, ih = img.size
+            # Landscape/square → full width (480pt); portrait → 65% so centering is visible
+            max_w = 480 if iw >= ih else int(self.content_w * 0.65)
             dw, dh = self._get_image_dims(path, max_w)
             self.need(dh + 12)
             tmp = self._prepare_image(path)
@@ -561,10 +581,8 @@ class PageWriter:
 
     # ── Overall Assessment page ───────────────────────────────────────────────
     def draw_overall_assessment(self, text):
-        self.need(100)
-        if self.y < PAGE_H - MARGIN - 60:
-            self.new_page()
-
+        # Always begin on a fresh page — prevents heading being orphaned from content
+        self.new_page()
         self.draw_section_title('Overall Assessment', top_pad=8, bot_pad=10)
 
         font_size = 10
@@ -639,20 +657,21 @@ def build_pdf(data, uploaded_files, output_path):
         build_str = bug.get('fixed_build', '')
         screenshots = uploaded_files.get(f'bug_{idx}', [])
 
-        # Need space for header + WHAT block (min 80pt)
-        pw.need(80)
-        if pw.y < PAGE_H - MARGIN - 40:
-            pass  # already checked via need()
+        # Ensure header + start of content always land on the same page.
+        # bar_h=32 + y_offset=4 = 36; separator = 24; min WHAT block = 80
+        header_h = 36
+        sep_h = 24
+        min_content = 80
 
-        # Separator between bugs (not before first)
-        if idx > 0:
-            pw.draw_separator()
-
-        # Bug header bar
-        pw.need(80)
-        if pw.y < PAGE_H - MARGIN - 50:
-            # Already on a page with content, check if we need a new page
-            pass
+        if idx == 0:
+            pw.need(header_h + min_content)
+        else:
+            # If separator + header + minimum content won't fit, go to a new page
+            # (skip the separator — it belongs with the preceding content, not here)
+            if pw.y - (sep_h + header_h + min_content) < MARGIN + 40:
+                pw.new_page()
+            else:
+                pw.draw_separator()
 
         pw.draw_bug_header(idx + 1, btype, severity, title, is_fixed=is_fixed)
 
@@ -670,19 +689,8 @@ def build_pdf(data, uploaded_files, output_path):
         if screenshots:
             pw.draw_screenshots(screenshots)
 
-    # ── Last page: Overall Assessment ────────────────────────────────────────
-    if assessment and assessment.strip():
-        pw.draw_overall_assessment(assessment)
-    else:
-        # Still draw signature on last page
-        if bugs:
-            pw.y -= 20
-            pw.need(30)
-            date_str = datetime.now().strftime('%d.%m.%Y')
-            sig = f'Aleksandar Parabucki \u00b7 Senior QA Engineer \u00b7 {date_str} \u00b7 aleksandar.parabucki@gmail.com'
-            pw.c.setFont('Helvetica', 9)
-            pw.c.setFillColor(COLOR_NARRATIVE)
-            pw.c.drawString(MARGIN, pw.y, sig)
+    # ── Last page: Overall Assessment (always rendered with heading + signature) ─
+    pw.draw_overall_assessment(assessment)
 
     c.save()
 
