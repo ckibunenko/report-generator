@@ -516,18 +516,15 @@ class PageWriter:
                 self._draw_one_image(path1)
                 i += 1
 
-    def _get_image_dims(self, path, max_w):
-        """Return (display_w, display_h) preserving aspect ratio."""
-        with Image.open(path) as img:
-            iw, ih = img.size
-        ratio = ih / iw
+    @staticmethod
+    def _img_dims(iw, ih, max_w):
+        """Scale to max_w, never up, preserve aspect ratio, cap at page height."""
         dw = min(iw, max_w)
-        dh = dw * ratio
-        # iPhone portrait cap
+        dh = dw * ih / iw
         max_h = PAGE_H - 2 * MARGIN - 40
         if dh > max_h:
             dh = max_h
-            dw = dh / ratio
+            dw = dh * iw / ih
         return dw, dh
 
     def _prepare_image(self, path, crop_aspect=None):
@@ -563,9 +560,8 @@ class PageWriter:
         try:
             with Image.open(path) as img:
                 iw, ih = img.size
-            # Landscape/square → full width (480pt); portrait → 65% so centering is visible
-            max_w = 480 if iw >= ih else int(self.content_w * 0.65)
-            dw, dh = self._get_image_dims(path, max_w)
+            max_w = 240 if ih > iw else 400
+            dw, dh = self._img_dims(iw, ih, max_w)
             self.need(dh + 12)
             tmp = self._prepare_image(path)
             cx = self.margin + (self.content_w - dw) / 2
@@ -579,28 +575,24 @@ class PageWriter:
             print(f'Image error {path}: {e}')
 
     def _draw_two_images(self, path1, path2):
-        target_w = 230  # display width for each image in pts
-        max_h = PAGE_H - 2 * MARGIN - 40
+        MAX_W = 210
+        GAP = 10
         try:
             with Image.open(path1) as img:
                 iw1, ih1 = img.size
             with Image.open(path2) as img:
                 iw2, ih2 = img.size
-            # Heights if both scaled to target_w wide
-            dh1 = target_w * ih1 / iw1
-            dh2 = target_w * ih2 / iw2
-            # Use the shorter height so both images match; apply page cap
-            display_h = min(dh1, dh2, max_h)
+            dw1, dh1 = self._img_dims(iw1, ih1, MAX_W)
+            dw2, dh2 = self._img_dims(iw2, ih2, MAX_W)
+            display_h = max(dh1, dh2)
             self.need(display_h + 12)
-            # Crop each image to the uniform target_w × display_h aspect ratio
-            crop_aspect = target_w / display_h
-            tmp1 = self._prepare_image(path1, crop_aspect=crop_aspect)
-            tmp2 = self._prepare_image(path2, crop_aspect=crop_aspect)
-            gap = (self.content_w - target_w * 2) / 3
-            x1 = self.margin + gap
-            x2 = x1 + target_w + gap
-            self.c.drawImage(tmp1, x1, self.y - display_h, width=target_w, height=display_h)
-            self.c.drawImage(tmp2, x2, self.y - display_h, width=target_w, height=display_h)
+            tmp1 = self._prepare_image(path1)
+            tmp2 = self._prepare_image(path2)
+            total_w = dw1 + GAP + dw2
+            x1 = self.margin + (self.content_w - total_w) / 2
+            x2 = x1 + dw1 + GAP
+            self.c.drawImage(tmp1, x1, self.y - dh1, width=dw1, height=dh1)
+            self.c.drawImage(tmp2, x2, self.y - dh2, width=dw2, height=dh2)
             self.y -= display_h + 6
             for tmp in (tmp1, tmp2):
                 try:
@@ -609,6 +601,37 @@ class PageWriter:
                     pass
         except Exception as e:
             print(f'Image pair error: {e}')
+
+    def _first_image_block_height(self, paths):
+        """Return display height of the first image block (single or portrait pair)."""
+        if not paths:
+            return 0
+
+        def _is_portrait(p):
+            try:
+                with Image.open(p) as img:
+                    iw, ih = img.size
+                return ih > iw
+            except Exception:
+                return True
+
+        def _dims_from_path(p, max_w):
+            try:
+                with Image.open(p) as img:
+                    iw, ih = img.size
+                return self._img_dims(iw, ih, max_w)
+            except Exception:
+                return max_w, PAGE_H - 2 * MARGIN - 40
+
+        path1 = paths[0]
+        if _is_portrait(path1) and len(paths) >= 2 and _is_portrait(paths[1]):
+            _, dh1 = _dims_from_path(path1, 210)
+            _, dh2 = _dims_from_path(paths[1], 210)
+            return max(dh1, dh2)
+        else:
+            max_w = 240 if _is_portrait(path1) else 400
+            _, dh = _dims_from_path(path1, max_w)
+            return dh
 
     # ── Separator line ────────────────────────────────────────────────────────
     def draw_separator(self):
@@ -674,15 +697,20 @@ def build_pdf(data, uploaded_files, output_path):
         build_str = bug.get('fixed_build', '')
         screenshots = uploaded_files.get(f'bug_{idx}', [])
 
-        # Ensure header + WWH content always land on the same page.
+        # Compute total height needed: header + WWH + description + fixed note + first image
         header_h = 36
         sep_h = 14
         wwh_h = pw._wwh_height(what, where, how, is_fixed=is_fixed, build_str=build_str)
+        desc_lines = simpleSplit(description, 'Helvetica', 9, pw.content_w) if description else []
+        desc_h = (len(desc_lines) * 13 + 6) if desc_lines else 0
+        fixed_h = 10 if (is_fixed and build_str) else 0
+        first_img_h = (4 + pw._first_image_block_height(screenshots)) if screenshots else 0
+        total_need = header_h + wwh_h + desc_h + fixed_h + first_img_h
 
         if idx == 0:
-            pw.need(header_h + wwh_h)
+            pw.need(total_need)
         else:
-            if pw.y - (sep_h + header_h + wwh_h) < MARGIN + 40:
+            if pw.y - (sep_h + total_need) < MARGIN + 40:
                 pw.new_page()
             else:
                 pw.draw_separator()
