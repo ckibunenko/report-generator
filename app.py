@@ -229,20 +229,19 @@ class PageWriter:
             self.c.drawString(cx + 6, self.y - row_h + 7, num_str)
             cx += col_w[0]
 
-            # Type/Severity badge
+            # Type/Severity badge — same dimensions as bug header pills
             badge_label = btype if btype == 'SUGGESTION' else severity
             badge_color = get_severity_color(badge_label if btype == 'SUGGESTION' else severity)
-            bw = 70
-            bh = 14
-            by = self.y - row_h + 4
+            bh = 16
+            self.c.setFont('Helvetica-Bold', 9)
+            dot = '\u25cf '
+            label_text = f'{dot}{badge_label}' if btype != 'SUGGESTION' else 'SUGGESTION'
+            bw = self.c.stringWidth(label_text, 'Helvetica-Bold', 9) + 12
+            by = self.y - row_h + (row_h - bh) / 2  # center pill in row
             self.c.setFillColor(badge_color)
             self.c.roundRect(cx + 4, by, bw, bh, 3, fill=1, stroke=0)
             self.c.setFillColor(COLOR_WHITE)
-            self.c.setFont('Helvetica-Bold', 8)
-            dot = '\u25cf '
-            label_text = f'{dot}{badge_label}' if btype != 'SUGGESTION' else 'SUGGESTION'
-            # Vertically center text: badge center - cap_height/2 ≈ by + 4
-            self.c.drawString(cx + 8, by + 4, label_text)
+            self.c.drawString(cx + 10, by + 5, label_text)
             cx += col_w[1]
 
             # Issue Area / Title
