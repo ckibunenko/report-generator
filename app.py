@@ -3,7 +3,7 @@ import re
 import uuid
 import json
 from datetime import datetime
-from flask import Flask, render_template, request, send_file
+from flask import Flask, render_template, request, send_file, jsonify, abort
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.utils import simpleSplit
@@ -823,9 +823,12 @@ def generate():
         'assessment': assessment,
     }
 
-    # Generate PDF
-    out_name = f'QA_Report_{app_name.replace(" ", "_")}_{uuid.uuid4().hex[:6]}.pdf'
+    # Generate PDF + JSON
+    slug = f'{app_name.replace(" ", "_")}_{uuid.uuid4().hex[:6]}'
+    out_name = f'QA_Report_{slug}.pdf'
     out_path = os.path.join(app.config['OUTPUT_FOLDER'], out_name)
+    json_name = f'QA_Report_{slug}.json'
+    json_path = os.path.join(app.config['OUTPUT_FOLDER'], json_name)
 
     try:
         build_pdf(data, uploaded_files, out_path)
@@ -836,7 +839,43 @@ def generate():
             except Exception:
                 pass
 
-    return send_file(out_path, as_attachment=True, download_name=out_name, mimetype='application/pdf')
+    report_json = {
+        'app_name': app_name,
+        'app_desc': app_desc,
+        'device': device,
+        'assessment': assessment,
+        'coverage': coverage_rows,
+        'bugs': [
+            {
+                'type': b['type'],
+                'severity': b['severity'],
+                'title': b['title'],
+                'area': b['area'],
+                'what': b['what'],
+                'where': b['where'],
+                'how': b['how'],
+                'description': b['description'],
+                'fixed': b['fixed'],
+                'fixed_build': b['fixed_build'],
+            }
+            for b in bugs
+        ],
+    }
+    with open(json_path, 'w', encoding='utf-8') as fh:
+        json.dump(report_json, fh, ensure_ascii=False, indent=2)
+
+    return jsonify({'pdf_url': f'/download/{out_name}', 'json_url': f'/download/{json_name}',
+                    'pdf_name': out_name, 'json_name': json_name})
+
+
+@app.route('/download/<filename>')
+def download_file(filename):
+    if '/' in filename or '\\' in filename or '..' in filename:
+        abort(400)
+    fpath = os.path.join(app.config['OUTPUT_FOLDER'], filename)
+    if not os.path.isfile(fpath):
+        abort(404)
+    return send_file(fpath, as_attachment=True, download_name=filename)
 
 
 if __name__ == '__main__':

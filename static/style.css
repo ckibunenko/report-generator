@@ -720,6 +720,21 @@ textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
 
 .btn-generate:active { transform: translateY(0); }
 
+.generate-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.btn-import {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 16px;
+  gap: 7px;
+}
+
 /* ── Loading Overlay ────────────────────────────────────────────────────── */
 .loading-overlay {
   position: fixed;
@@ -818,7 +833,8 @@ textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
   .form-grid-2 { grid-template-columns: 1fr; }
   .wwh-grid { grid-template-columns: 1fr; }
   .generate-bar-inner { flex-direction: column; align-items: stretch; }
-  .btn-generate { justify-content: center; }
+  .generate-bar-actions { flex-direction: column; }
+  .btn-generate, .btn-import { justify-content: center; }
   .bug-card-header { flex-wrap: wrap; }
 }
 

@@ -111,16 +111,27 @@
             <strong id="summaryText">Ready to generate</strong>
             <span id="summarySubtext">Fill in the form above and click Generate</span>
           </div>
-          <button type="button" class="btn btn-generate" onclick="generateReport()">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="2"/>
-              <polyline points="14,2 14,8 20,8" stroke="currentColor" stroke-width="2"/>
-              <line x1="16" y1="13" x2="8" y2="13" stroke="currentColor" stroke-width="2"/>
-              <line x1="16" y1="17" x2="8" y2="17" stroke="currentColor" stroke-width="2"/>
-              <polyline points="10,9 9,9 8,9" stroke="currentColor" stroke-width="2"/>
-            </svg>
-            Generate PDF Report
-          </button>
+          <div class="generate-bar-actions">
+            <label class="btn btn-secondary btn-import" title="Import JSON report">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" stroke-width="2"/>
+                <polyline points="17,8 12,3 7,8" stroke="currentColor" stroke-width="2"/>
+                <line x1="12" y1="3" x2="12" y2="15" stroke="currentColor" stroke-width="2"/>
+              </svg>
+              Import JSON
+              <input type="file" accept=".json" style="display:none" onchange="importJson(this)" />
+            </label>
+            <button type="button" class="btn btn-generate" onclick="generateReport()">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="2"/>
+                <polyline points="14,2 14,8 20,8" stroke="currentColor" stroke-width="2"/>
+                <line x1="16" y1="13" x2="8" y2="13" stroke="currentColor" stroke-width="2"/>
+                <line x1="16" y1="17" x2="8" y2="17" stroke="currentColor" stroke-width="2"/>
+                <polyline points="10,9 9,9 8,9" stroke="currentColor" stroke-width="2"/>
+              </svg>
+              Generate PDF + JSON
+            </button>
+          </div>
         </div>
       </div>
 
@@ -133,7 +144,7 @@
   <div id="loadingOverlay" class="loading-overlay hidden">
     <div class="loading-box">
       <div class="spinner"></div>
-      <p>Generating PDF report&hellip;</p>
+      <p>Generating PDF + JSON&hellip;</p>
       <span>This may take a moment</span>
     </div>
   </div>
@@ -486,47 +497,91 @@
     const form = document.getElementById('reportForm');
     const formData = new FormData(form);
 
-    // Sync bug data (ensure hidden fields are up to date)
     formData.set('bug_count', bugs.length);
-
-    // Re-add fixed checkboxes (unchecked checkboxes are not included in FormData)
     bugs.forEach((bug, idx) => {
       formData.set(`bug_fixed_${idx}`, bug.fixed ? 'true' : 'false');
     });
-
-    // Manually add screenshots from state (file inputs have no name to avoid auto-inclusion)
     bugs.forEach((bug, idx) => {
       bug.screenshots.forEach(s => {
         formData.append(`bug_screenshots_${idx}`, s.file, s.file.name);
       });
     });
 
-    fetch('/generate', {
-      method: 'POST',
-      body: formData,
-    })
+    fetch('/generate', { method: 'POST', body: formData })
     .then(res => {
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
-      return res.blob();
+      return res.json();
     })
-    .then(blob => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const appName = document.getElementById('app_name').value.trim() || 'Report';
-      a.href = url;
-      a.download = `QA_Report_${appName.replace(/\s+/g, '_')}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+    .then(data => {
+      triggerDownload(data.pdf_url, data.pdf_name);
+      setTimeout(() => triggerDownload(data.json_url, data.json_name), 400);
       showLoading(false);
-      showToast('Report generated successfully!', 'success');
+      showToast('PDF + JSON generated successfully!', 'success');
     })
     .catch(err => {
       showLoading(false);
       showToast('Failed to generate report: ' + err.message, 'error');
       console.error(err);
     });
+  }
+
+  function triggerDownload(url, filename) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  // ── Import JSON ─────────────────────────────────────────────────────────
+  function importJson(input) {
+    const file = input.files[0];
+    if (!file) return;
+    input.value = '';
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const d = JSON.parse(e.target.result);
+
+        document.getElementById('app_name').value = d.app_name || '';
+        document.getElementById('app_desc').value = d.app_desc || '';
+        document.getElementById('device').value = d.device || '';
+        document.getElementById('assessment').value = d.assessment || '';
+
+        // Coverage
+        document.getElementById('coverageRows').innerHTML = '';
+        (d.coverage || []).forEach(r => addCoverageRow(r.area || '', r.scope || ''));
+
+        // Bugs
+        bugs = [];
+        bugIdCounter = 0;
+        (d.bugs || []).forEach(b => {
+          const id = bugIdCounter++;
+          bugs.push({
+            id,
+            type: b.type || 'BUG',
+            severity: b.severity || 'MEDIUM',
+            title: b.title || '',
+            area: b.area || '',
+            what: b.what || '',
+            where: b.where || '',
+            how: b.how || '',
+            description: b.description || '',
+            fixed: b.fixed || false,
+            fixed_build: b.fixed_build || '',
+            screenshots: [],
+          });
+        });
+        renderBugs();
+        updateSummary();
+        showToast('JSON imported — add screenshots manually', 'success');
+      } catch (err) {
+        showToast('Invalid JSON file', 'error');
+        console.error(err);
+      }
+    };
+    reader.readAsText(file);
   }
 
   // ── UI Helpers ──────────────────────────────────────────────────────────
