@@ -361,10 +361,11 @@ textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
 .bug-card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  margin-bottom: 14px;
+  border-radius: 12px;
+  margin-bottom: 16px;
   overflow: hidden;
   transition: border-color var(--transition);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
 }
 
 .bug-card:hover { border-color: var(--color-border-light); }
@@ -387,7 +388,8 @@ textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
 }
 
 .bug-card-header-left {
-  display: flex;
+  display: grid;
+  grid-template-columns: 40px 100px 1fr 80px;
   align-items: center;
   gap: 8px;
   flex: 1;
@@ -408,7 +410,6 @@ textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
   min-width: 0;
 }
 
@@ -437,30 +438,31 @@ textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
 .badge {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 8px;
   font-size: 11px;
   font-weight: 700;
-  padding: 3px 8px;
   border-radius: 4px;
   letter-spacing: 0.4px;
   flex-shrink: 0;
-  color: white;
 }
 
-.badge-high       { background: var(--color-high); }
-.badge-medium     { background: var(--color-medium); }
-.badge-low        { background: var(--color-low); color: #1a1a1a; }
-.badge-suggestion { background: var(--color-suggestion); }
+.badge-high       { background: #fee2e2; color: #991b1b; }
+.badge-medium     { background: #fef3c7; color: #92400e; }
+.badge-low        { background: #e0f2fe; color: #0369a1; }
+.badge-suggestion { background: var(--color-suggestion); color: white; }
 
 .fixed-tag {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   font-size: 11px;
   font-weight: 700;
-  color: var(--color-green);
-  background: rgba(46, 168, 76, 0.1);
-  border: 1px solid rgba(46, 168, 76, 0.3);
-  border-radius: 4px;
-  padding: 2px 7px;
+  color: #16a34a;
+  background: #e6f9ed;
+  border-radius: 6px;
+  padding: 2px 6px;
   flex-shrink: 0;
 }
 
@@ -476,13 +478,13 @@ textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
 
 .wwh-label {
   display: inline-block;
-  font-size: 10px;
-  font-weight: 800;
+  font-size: 11px;
+  font-weight: 700;
   padding: 2px 6px;
   border-radius: 3px;
   margin-right: 5px;
   letter-spacing: 0.5px;
-  color: #1a1a1a;
+  text-transform: uppercase;
 }
 
 .wwh-what  .wwh-label { background: #e8f0fe; color: #1a2744; }
@@ -820,6 +822,7 @@ textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
   .generate-bar-inner { flex-direction: column; align-items: stretch; }
   .btn-generate { justify-content: center; }
   .bug-card-header { flex-wrap: wrap; }
+  .bug-card-header-left { grid-template-columns: 32px 90px 1fr; }
 }
 
 @media (max-width: 500px) {
@@ -837,4 +840,24 @@ textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
 ::selection {
   background: rgba(74, 124, 245, 0.3);
   color: var(--color-text);
+}
+
+/* ── Typography helpers ─────────────────────────────────────────────────── */
+.section-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  letter-spacing: 0.4px;
+}
+
+.section-text {
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
+.status-fixed {
+  color: #16a34a;
+  font-weight: 600;
 }

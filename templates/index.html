@@ -277,7 +277,11 @@
     const isSuggestion = bug.type === 'SUGGESTION';
     const sevBadge = isSuggestion
       ? `<span class="badge badge-suggestion">SUGGESTION</span>`
-      : `<span class="badge badge-${bug.severity.toLowerCase()}">&bull; ${bug.severity}</span>`;
+      : `<span class="badge badge-${bug.severity.toLowerCase()}">${bug.severity}</span>`;
+
+    const statusEl = bug.fixed
+      ? `<span class="fixed-tag">&#10003; FIXED</span>`
+      : `<span></span>`;
 
     card.innerHTML = `
       <div class="bug-card-header">
@@ -285,7 +289,7 @@
           <span class="bug-number">#${displayIdx + 1}</span>
           ${sevBadge}
           <span class="bug-title-preview">${escHtml(bug.title) || '<em>Untitled</em>'}</span>
-          ${bug.fixed ? '<span class="fixed-tag">&#10003; FIXED</span>' : ''}
+          ${statusEl}
         </div>
         <div class="bug-card-header-right">
           <button type="button" class="btn-icon" onclick="moveBug(${bug.id}, -1)" title="Move up" ${displayIdx === 0 ? 'disabled' : ''}>
