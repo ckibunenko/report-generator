@@ -195,6 +195,8 @@ def estimate_bug_start_height(pw, bug):
 class PageWriter:
     MIN_INLINE_IMAGE_HEIGHT = 220
     MIN_INLINE_PAIR_HEIGHT = 180
+    MIN_TRAILING_IMAGE_HEIGHT = 140
+    MIN_TRAILING_PAIR_HEIGHT = 120
 
     def __init__(self, c, page_w, page_h, margin):
         self.c = c
@@ -739,11 +741,12 @@ class PageWriter:
         try:
             with Image.open(path) as img:
                 iw, ih = img.size
-            max_w = 270 if ih > iw else 400
+            max_w = 240 if ih > iw else 400
             dw, dh = self._img_dims(iw, ih, max_w)
+            min_h = self.MIN_TRAILING_IMAGE_HEIGHT if reserve_after else self.MIN_INLINE_IMAGE_HEIGHT
             target_h = self._target_block_height(
                 dh,
-                self.MIN_INLINE_IMAGE_HEIGHT,
+                min_h,
                 reserve_after=reserve_after,
             )
 
@@ -776,9 +779,10 @@ class PageWriter:
             dw1, dh1 = self._img_dims(iw1, ih1, MAX_W)
             dw2, dh2 = self._img_dims(iw2, ih2, MAX_W)
             display_h = max(dh1, dh2)
+            min_h = self.MIN_TRAILING_PAIR_HEIGHT if reserve_after else self.MIN_INLINE_PAIR_HEIGHT
             target_h = self._target_block_height(
                 display_h,
-                self.MIN_INLINE_PAIR_HEIGHT,
+                min_h,
                 reserve_after=reserve_after,
             )
 

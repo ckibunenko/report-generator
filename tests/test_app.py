@@ -181,6 +181,17 @@ class ReportGeneratorTests(unittest.TestCase):
             estimate_bug_start_height(writer, long_followup),
         )
 
+    def test_trailing_image_rule_allows_more_aggressive_scaling(self):
+        pdf = canvas.Canvas(io.BytesIO())
+        writer = PageWriter(pdf, PAGE_W, PAGE_H, MARGIN)
+        writer.y = writer.margin + 40 + 190
+
+        self.assertIsNone(writer._target_block_height(400, writer.MIN_INLINE_IMAGE_HEIGHT, reserve_after=20))
+        self.assertEqual(
+            writer._target_block_height(400, writer.MIN_TRAILING_IMAGE_HEIGHT, reserve_after=20),
+            170,
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
