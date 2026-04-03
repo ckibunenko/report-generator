@@ -295,7 +295,7 @@
         <div class="bug-card-header-left">
           <span class="bug-number">#${displayIdx + 1}</span>
           ${sevBadge}
-          <span class="bug-title-preview">${escHtml(bug.title) || '<em>Untitled</em>'}</span>
+          <span class="bug-title-preview">${bug.area ? escHtml(bug.area) + ' \u2014 ' + escHtml(bug.title) : (escHtml(bug.title) || '<em>Untitled</em>')}</span>
           ${bug.fixed ? '<span class="fixed-tag">&#10003; FIXED</span>' : ''}
         </div>
         <div class="bug-card-header-right">

@@ -405,11 +405,13 @@ textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
 .bug-title-preview {
   font-size: 13px;
   color: var(--color-text-muted);
-  white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   flex: 1;
   min-width: 0;
+  word-break: break-word;
 }
 
 .bug-title-preview em { color: var(--color-text-dim); }

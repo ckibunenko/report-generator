@@ -18,6 +18,20 @@ app.config['OUTPUT_FOLDER'] = os.path.join(os.path.dirname(__file__), 'output')
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _smart_truncate(text, max_len=51):
+    """Truncate at a word boundary, appending … when shortened."""
+    if len(text) <= max_len:
+        return text
+    # Leave one char for the ellipsis
+    candidate = text[:max_len - 1]
+    last_space = candidate.rfind(' ')
+    if last_space > 0:
+        candidate = candidate[:last_space]
+    return candidate + '\u2026'
+
+
 # ─── PDF Constants ────────────────────────────────────────────────────────────
 PAGE_W, PAGE_H = A4  # 595.28 x 841.89 pt
 MARGIN = 38
@@ -277,10 +291,7 @@ class PageWriter:
             self.c.setFillColor(COLOR_TEXT)
             self.c.setFont('Helvetica', 9)
             area_title = f'{area} \u2014 {title}' if area else title
-            # Truncate if too long
-            max_chars = int(col_w[2] / 5.2)
-            if len(area_title) > max_chars:
-                area_title = area_title[:max_chars - 2] + '\u2026'
+            area_title = _smart_truncate(area_title)
             if is_fixed:
                 self.c.saveState()
                 self.c.setStrokeColor(COLOR_TEXT)
