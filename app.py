@@ -2,11 +2,13 @@ import os
 import re
 import uuid
 import json
+import time
 from datetime import datetime
 from flask import Flask, render_template, request, send_file, jsonify, abort
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.utils import simpleSplit
+from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
 from PIL import Image
 import io
@@ -14,9 +16,18 @@ import io
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['OUTPUT_FOLDER'] = os.path.join(os.path.dirname(__file__), 'output')
+app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
+app.config['REPORT_PREFIX'] = 'QA_Report_'
+app.config['REPORT_TTL_SECONDS'] = 24 * 60 * 60
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
+
+ALLOWED_IMAGE_FORMATS = {
+    'PNG': '.png',
+    'JPEG': '.jpg',
+    'WEBP': '.webp',
+}
 
 # ─── PDF Constants ────────────────────────────────────────────────────────────
 PAGE_W, PAGE_H = A4  # 595.28 x 841.89 pt
@@ -59,8 +70,132 @@ def clean_text(text):
     return ' '.join(text.split())
 
 
+def build_report_slug(app_name):
+    """Create a filesystem-safe slug without changing the report title shown in the PDF."""
+    safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', app_name.strip())
+    safe_name = re.sub(r'_+', '_', safe_name).strip('._-')
+    return safe_name[:80] or 'App'
+
+
+def cleanup_paths(paths):
+    for path in paths:
+        if not path:
+            continue
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            app.logger.warning('Failed to remove temporary file: %s', path)
+
+
+def cleanup_old_reports():
+    cutoff = time.time() - app.config['REPORT_TTL_SECONDS']
+    prefix = app.config['REPORT_PREFIX']
+
+    for entry in os.listdir(app.config['OUTPUT_FOLDER']):
+        if not entry.startswith(prefix):
+            continue
+
+        path = os.path.join(app.config['OUTPUT_FOLDER'], entry)
+        if not os.path.isfile(path):
+            continue
+
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+        except OSError:
+            app.logger.warning('Failed to clean stale report: %s', path)
+
+
+def validate_image_upload(file_storage):
+    filename = os.path.basename(file_storage.filename or 'upload')
+
+    try:
+        with Image.open(file_storage.stream) as img:
+            img.verify()
+            image_format = (img.format or '').upper()
+    except Exception as exc:
+        raise ValueError(
+            f'"{filename}" is not a valid image. Please upload PNG, JPG, or WEBP screenshots.'
+        ) from exc
+    finally:
+        file_storage.stream.seek(0)
+
+    if image_format not in ALLOWED_IMAGE_FORMATS:
+        raise ValueError(
+            f'"{filename}" uses an unsupported format. Please upload PNG, JPG, or WEBP screenshots.'
+        )
+
+    return ALLOWED_IMAGE_FORMATS[image_format]
+
+
+def format_upload_limit():
+    limit = app.config['MAX_CONTENT_LENGTH']
+    if limit % (1024 * 1024) == 0:
+        return f'{limit // (1024 * 1024)} MB'
+    if limit % 1024 == 0:
+        return f'{limit // 1024} KB'
+    return f'{limit} bytes'
+
+
+def wrap_pdf_text(text, font_name, font_size, max_width, max_lines=None):
+    lines = simpleSplit(text, font_name, font_size, max_width)
+    if not max_lines or len(lines) <= max_lines:
+        return lines
+
+    truncated = lines[:max_lines]
+    last_line = truncated[-1].rstrip()
+    ellipsis = '\u2026'
+
+    while last_line and pdfmetrics.stringWidth(last_line + ellipsis, font_name, font_size) > max_width:
+        last_line = last_line[:-1].rstrip()
+
+    truncated[-1] = (last_line + ellipsis) if last_line else ellipsis
+    return truncated
+
+
+def bug_sort_key(entry):
+    bug = entry['bug']
+    btype = (bug.get('type') or 'BUG').upper()
+    severity = (bug.get('severity') or '').upper()
+
+    if btype == 'SUGGESTION':
+        return (1, 0, entry['original_index'])
+
+    severity_rank = {
+        'HIGH': 0,
+        'MEDIUM': 1,
+        'LOW': 2,
+    }.get(severity, 3)
+    return (0, severity_rank, entry['original_index'])
+
+
+def sort_bug_entries_for_pdf(bugs, uploaded_files):
+    entries = [
+        {
+            'bug': bug,
+            'screenshots': uploaded_files.get(f'bug_{idx}', []),
+            'original_index': idx,
+        }
+        for idx, bug in enumerate(bugs)
+    ]
+    return sorted(entries, key=bug_sort_key)
+
+
+def estimate_bug_start_height(pw, bug):
+    what = bug.get('what', '')
+
+    header_h = 36
+    what_h = pw._wwh_block_height(what)
+    return header_h + what_h + 4
+
+
 # ─── PageWriter ───────────────────────────────────────────────────────────────
 class PageWriter:
+    MIN_INLINE_IMAGE_HEIGHT = 220
+    MIN_INLINE_PAIR_HEIGHT = 180
+
     def __init__(self, c, page_w, page_h, margin):
         self.c = c
         self.page_w = page_w
@@ -102,7 +237,12 @@ class PageWriter:
 
     # ── Cover header ──────────────────────────────────────────────────────────
     def draw_cover_header(self, app_name, app_desc, device):
-        header_h = 90
+        title_text = f'QA Test Report \u2014 {app_name}'
+        title_lines = wrap_pdf_text(title_text, 'Helvetica-Bold', 18, self.content_w - 24, max_lines=2)
+        subtitle = f'{app_name} \u2014 {app_desc}' if app_desc else app_name
+        subtitle_lines = wrap_pdf_text(subtitle, 'Helvetica', 10, self.content_w - 24, max_lines=2) if subtitle else []
+
+        header_h = 90 + max(0, len(title_lines) - 1) * 20 + max(0, len(subtitle_lines) - 1) * 12
         x = self.margin
         top = self.y
 
@@ -113,12 +253,19 @@ class PageWriter:
         # Main title
         self.c.setFillColor(COLOR_WHITE)
         self.c.setFont('Helvetica-Bold', 18)
-        self.c.drawString(x + 12, top - 28, f'QA Test Report \u2014 {app_name}')
+        title_y = top - 28
+        for idx, line in enumerate(title_lines):
+            baseline = title_y - idx * 20
+            if idx == 0:
+                self.c.drawString(x + 12, baseline, line)
+            else:
+                self.c.drawCentredString(x + self.content_w / 2, baseline, line)
 
         # Subtitle
         self.c.setFont('Helvetica', 10)
-        subtitle = f'{app_name} \u2014 {app_desc}' if app_desc else app_name
-        self.c.drawString(x + 12, top - 46, subtitle)
+        subtitle_y = title_y - len(title_lines) * 20 + 2
+        for idx, line in enumerate(subtitle_lines):
+            self.c.drawString(x + 12, subtitle_y - idx * 12, line)
 
         # Right side: tester / date / device
         date_str = datetime.now().strftime('%d.%m.%Y')
@@ -207,24 +354,50 @@ class PageWriter:
             self.content_w * 0.22,
         ]
         headers = ['#', 'Type / Severity', 'Issue Area', 'Status']
-        row_h = 22
+        header_h = 22
+        row_min_h = 22
+        line_h = 11
+        top_pad = 6
+        bottom_pad = 5
         x = self.margin
 
-        # Table header
-        self.need(row_h + 4)
-        self.c.setFillColor(COLOR_HEADER_BG)
-        self.c.rect(x, self.y - row_h, self.content_w, row_h, fill=1, stroke=0)
-        self.c.setFillColor(COLOR_WHITE)
-        self.c.setFont('Helvetica-Bold', 9)
-        cx = x
-        for i, h in enumerate(headers):
-            self.c.drawString(cx + 6, self.y - row_h + 7, h)
-            cx += col_w[i]
-        self.y -= row_h
+        def draw_header():
+            self.need(header_h + 4)
+            self.c.setFillColor(COLOR_HEADER_BG)
+            self.c.rect(x, self.y - header_h, self.content_w, header_h, fill=1, stroke=0)
+            self.c.setFillColor(COLOR_WHITE)
+            self.c.setFont('Helvetica-Bold', 9)
+            cx = x
+            for i, h in enumerate(headers):
+                self.c.drawString(cx + 6, self.y - header_h + 7, h)
+                cx += col_w[i]
+            self.y -= header_h
+
+        draw_header()
 
         for idx, bug in enumerate(bugs):
             is_fixed = bug.get('fixed', False)
-            self.need(row_h)
+            btype = bug.get('type', 'BUG').upper()
+            severity = bug.get('severity', '').upper()
+            title = bug.get('title', '')
+            area = bug.get('area', '')
+            build = bug.get('fixed_build', '')
+            area_title = f'{area} \u2014 {title}' if area else title
+            area_lines = simpleSplit(area_title, 'Helvetica', 9, col_w[2] - 12) or ['']
+            status_text = ''
+            status_lines = ['']
+            if is_fixed:
+                status_text = '\u2713 FIXED'
+                if build:
+                    status_text += f' {build}'
+                status_lines = simpleSplit(status_text, 'Helvetica-Bold', 9, col_w[3] - 12) or ['']
+
+            content_lines = max(len(area_lines), len(status_lines))
+            row_h = max(row_min_h, top_pad + content_lines * line_h + bottom_pad)
+
+            if self.y - row_h < self.margin + 40:
+                self.new_page()
+                draw_header()
 
             if is_fixed:
                 self.c.setFillColor(COLOR_FIXED_BG)
@@ -236,26 +409,22 @@ class PageWriter:
             self.c.setLineWidth(0.3)
             self.c.line(x, self.y - row_h, x + self.content_w, self.y - row_h)
 
-            btype = bug.get('type', 'BUG').upper()
-            severity = bug.get('severity', '').upper()
-            title = bug.get('title', '')
-            area = bug.get('area', '')
-            build = bug.get('fixed_build', '')
-
             cx = x
+            text_y = self.y - top_pad
+
             # # column
             self.c.setFillColor(COLOR_TEXT)
             self.c.setFont('Helvetica-Bold', 9)
             num_str = str(idx + 1)
+            num_baseline = text_y - line_h + 3
             if is_fixed:
                 self.c.saveState()
                 self.c.setStrokeColor(COLOR_TEXT)
                 self.c.setLineWidth(0.5)
                 sw = self.c.stringWidth(num_str, 'Helvetica-Bold', 9)
-                mid_y = self.y - row_h + 7 + 4
-                self.c.line(cx + 6, mid_y, cx + 6 + sw, mid_y)
+                self.c.line(cx + 6, num_baseline + 4, cx + 6 + sw, num_baseline + 4)
                 self.c.restoreState()
-            self.c.drawString(cx + 6, self.y - row_h + 7, num_str)
+            self.c.drawString(cx + 6, num_baseline, num_str)
             cx += col_w[0]
 
             # Type/Severity badge — same style as header bar: 9pt font, dynamic width
@@ -264,7 +433,7 @@ class PageWriter:
             dot = '\u25cf '
             label_text = f'{dot}{badge_label}' if btype != 'SUGGESTION' else 'SUGGESTION'
             bh = 16
-            by = self.y - row_h + 3
+            by = self.y - top_pad - 13
             self.c.setFont('Helvetica-Bold', 9)
             bw = self.c.stringWidth(label_text, 'Helvetica-Bold', 9) + 12
             self.c.setFillColor(badge_color)
@@ -276,32 +445,28 @@ class PageWriter:
             # Issue Area / Title
             self.c.setFillColor(COLOR_TEXT)
             self.c.setFont('Helvetica', 9)
-            area_title = f'{area} \u2014 {title}' if area else title
-            # Truncate if too long
-            max_chars = int(col_w[2] / 5.2)
-            if len(area_title) > max_chars:
-                area_title = area_title[:max_chars - 2] + '\u2026'
-            if is_fixed:
-                self.c.saveState()
-                self.c.setStrokeColor(COLOR_TEXT)
-                self.c.setLineWidth(0.4)
-                sw = self.c.stringWidth(area_title, 'Helvetica', 9)
-                mid_y = self.y - row_h + 7 + 4
-                self.c.line(cx + 6, mid_y, cx + 6 + sw, mid_y)
-                self.c.restoreState()
-            self.c.drawString(cx + 6, self.y - row_h + 7, area_title)
+            line_y = text_y
+            for line in area_lines:
+                baseline = line_y - line_h + 3
+                if is_fixed:
+                    self.c.saveState()
+                    self.c.setStrokeColor(COLOR_TEXT)
+                    self.c.setLineWidth(0.4)
+                    sw = self.c.stringWidth(line, 'Helvetica', 9)
+                    self.c.line(cx + 6, baseline + 4, cx + 6 + sw, baseline + 4)
+                    self.c.restoreState()
+                self.c.drawString(cx + 6, baseline, line)
+                line_y -= line_h
             cx += col_w[2]
 
             # Status
             if is_fixed:
                 self.c.setFillColor(COLOR_STATUS_GREEN)
                 self.c.setFont('Helvetica-Bold', 9)
-                status_text = '\u2713 FIXED'
-                if build:
-                    status_text += f' {build}'
-                self.c.drawString(cx + 6, self.y - row_h + 7, status_text)
-            else:
-                self.c.drawString(cx + 6, self.y - row_h + 7, '')
+                line_y = text_y
+                for line in status_lines:
+                    self.c.drawString(cx + 6, line_y - line_h + 3, line)
+                    line_y -= line_h
 
             self.y -= row_h
 
@@ -372,53 +537,43 @@ class PageWriter:
         self.y -= bar_h + 4
 
     # ── WHAT / WHERE / HOW block ──────────────────────────────────────────────
-    def _wwh_height(self, what, where, how, is_fixed=False, build_str=''):
+    def _wwh_text_metrics(self):
         label_w = 55
         text_x_offset = 6
         text_w = self.content_w - label_w - text_x_offset - 4
         font_size = 9
         line_h = 13
         pad = 6
+        return label_w, text_x_offset, text_w, font_size, line_h, pad
+
+    def _wwh_block_lines(self, text):
+        _, _, text_w, font_size, _, _ = self._wwh_text_metrics()
+        lines = simpleSplit(text, 'Helvetica', font_size, text_w)
+        return lines or ['']
+
+    def _wwh_block_height(self, text):
+        _, _, _, _, line_h, pad = self._wwh_text_metrics()
+        lines = self._wwh_block_lines(text)
+        return max(len(lines), 1) * line_h + pad * 2
+
+    def _wwh_height(self, what, where, how, is_fixed=False, build_str=''):
         total = 6 * 2  # outer padding
         for text in (what, where, how):
-            lines = simpleSplit(text, 'Helvetica', font_size, text_w)
-            if not lines:
-                lines = ['']
-            total += max(len(lines), 1) * line_h + pad * 2 + 4
+            total += self._wwh_block_height(text) + 4
         if is_fixed and build_str:
             total += 22
         return total
 
     def draw_what_where_how(self, what, where, how, is_fixed=False, build_str=''):
-        label_w = 55
-        text_x_offset = 6          # pixels from label_w to text start
-        text_w = self.content_w - label_w - text_x_offset - 4  # available from draw pos to right margin
-        font_size = 9
-        line_h = 13
-        pad = 6
-
-        def block_height(text):
-            lines = simpleSplit(text, 'Helvetica', font_size, text_w)
-            if not lines:
-                lines = ['']
-            return max(len(lines), 1) * line_h + pad * 2
+        label_w, text_x_offset, _, font_size, line_h, pad = self._wwh_text_metrics()
 
         blocks = [('WHAT:', what), ('WHERE:', where), ('HOW:', how)]
-        total_h = sum(block_height(t) for _, t in blocks) + 6 * 2
-
-        # Fixed badge extra height
-        if is_fixed and build_str:
-            total_h += 22
-
-        self.need(total_h)
         x = self.margin
-        start_y = self.y
 
         for label, text in blocks:
-            bh = block_height(text)
-            lines = simpleSplit(text, 'Helvetica', font_size, text_w)
-            if not lines:
-                lines = ['']
+            bh = self._wwh_block_height(text)
+            lines = self._wwh_block_lines(text)
+            self.need(bh)
 
             # Label background
             self.c.setFillColor(COLOR_LABEL_BG)
@@ -466,7 +621,7 @@ class PageWriter:
             return
         total_h = len(lines) * line_h + 6
         self.need(total_h)
-        self.y -= 4
+        self.y -= 13
         self.c.setFillColor(COLOR_TEXT)
         self.c.setFont('Helvetica', font_size)
         for line in lines:
@@ -488,11 +643,11 @@ class PageWriter:
         self.y -= 8
 
     # ── Screenshots ───────────────────────────────────────────────────────────
-    def draw_screenshots(self, image_paths):
+    def draw_screenshots(self, image_paths, reserve_after=0):
         if not image_paths:
             return
 
-        self.y -= 4
+        self.y -= 2
 
         def _is_portrait(path):
             try:
@@ -507,13 +662,19 @@ class PageWriter:
             path1 = image_paths[i]
             # Only pair two consecutive portraits side-by-side;
             # landscape/square images always display full-width one at a time
-            if (_is_portrait(path1)
-                    and i + 1 < len(image_paths)
-                    and _is_portrait(image_paths[i + 1])):
-                self._draw_two_images(path1, image_paths[i + 1])
+            is_pair = (
+                _is_portrait(path1)
+                and i + 1 < len(image_paths)
+                and _is_portrait(image_paths[i + 1])
+            )
+            is_last_block = (i + (2 if is_pair else 1)) >= len(image_paths)
+            block_reserve = reserve_after if is_last_block else 0
+
+            if is_pair:
+                self._draw_two_images(path1, image_paths[i + 1], reserve_after=block_reserve)
                 i += 2
             else:
-                self._draw_one_image(path1)
+                self._draw_one_image(path1, reserve_after=block_reserve)
                 i += 1
 
     @staticmethod
@@ -526,6 +687,24 @@ class PageWriter:
             dh = max_h
             dw = dh * iw / ih
         return dw, dh
+
+    def _available_content_height(self):
+        return max(self.y - (self.margin + 40), 0)
+
+    @staticmethod
+    def _scale_dims_to_height(dw, dh, max_h):
+        scale = max_h / dh
+        return dw * scale, dh * scale
+
+    def _target_block_height(self, natural_h, min_h, reserve_after=0):
+        available_h = self._available_content_height()
+        preferred_h = available_h - reserve_after if reserve_after else available_h
+
+        if preferred_h >= min_h:
+            return min(natural_h, preferred_h)
+        if available_h >= min_h:
+            return min(natural_h, available_h)
+        return None
 
     def _prepare_image(self, path, crop_aspect=None):
         """Convert image to RGB JPEG. crop_aspect=(w/h) crops to that ratio if given."""
@@ -556,17 +735,29 @@ class PageWriter:
             img.save(tmp_path, 'JPEG', quality=85)
         return tmp_path
 
-    def _draw_one_image(self, path):
+    def _draw_one_image(self, path, reserve_after=0):
         try:
             with Image.open(path) as img:
                 iw, ih = img.size
-            max_w = 240 if ih > iw else 400
+            max_w = 270 if ih > iw else 400
             dw, dh = self._img_dims(iw, ih, max_w)
-            self.need(dh + 12)
+            target_h = self._target_block_height(
+                dh,
+                self.MIN_INLINE_IMAGE_HEIGHT,
+                reserve_after=reserve_after,
+            )
+
+            # If the image nearly fits, scale it to the remaining space instead of
+            # forcing a page break that would leave the previous page visibly empty.
+            if target_h is None:
+                self.need(dh + 12)
+            elif target_h < dh:
+                dw, dh = self._scale_dims_to_height(dw, dh, target_h)
+
             tmp = self._prepare_image(path)
             cx = self.margin + (self.content_w - dw) / 2
             self.c.drawImage(tmp, cx, self.y - dh, width=dw, height=dh)
-            self.y -= dh + 6
+            self.y -= dh + 4
             try:
                 os.remove(tmp)
             except Exception:
@@ -574,7 +765,7 @@ class PageWriter:
         except Exception as e:
             print(f'Image error {path}: {e}')
 
-    def _draw_two_images(self, path1, path2):
+    def _draw_two_images(self, path1, path2, reserve_after=0):
         MAX_W = 210
         GAP = 10
         try:
@@ -585,7 +776,22 @@ class PageWriter:
             dw1, dh1 = self._img_dims(iw1, ih1, MAX_W)
             dw2, dh2 = self._img_dims(iw2, ih2, MAX_W)
             display_h = max(dh1, dh2)
-            self.need(display_h + 12)
+            target_h = self._target_block_height(
+                display_h,
+                self.MIN_INLINE_PAIR_HEIGHT,
+                reserve_after=reserve_after,
+            )
+
+            if target_h is None:
+                self.need(display_h + 12)
+            elif target_h < display_h:
+                scale = target_h / display_h
+                dw1 *= scale
+                dh1 *= scale
+                dw2 *= scale
+                dh2 *= scale
+                display_h = target_h
+
             tmp1 = self._prepare_image(path1)
             tmp2 = self._prepare_image(path2)
             total_w = dw1 + GAP + dw2
@@ -593,7 +799,7 @@ class PageWriter:
             x2 = x1 + dw1 + GAP
             self.c.drawImage(tmp1, x1, self.y - dh1, width=dw1, height=dh1)
             self.c.drawImage(tmp2, x2, self.y - dh2, width=dw2, height=dh2)
-            self.y -= display_h + 6
+            self.y -= display_h + 4
             for tmp in (tmp1, tmp2):
                 try:
                     os.remove(tmp)
@@ -601,37 +807,6 @@ class PageWriter:
                     pass
         except Exception as e:
             print(f'Image pair error: {e}')
-
-    def _first_image_block_height(self, paths):
-        """Return display height of the first image block (single or portrait pair)."""
-        if not paths:
-            return 0
-
-        def _is_portrait(p):
-            try:
-                with Image.open(p) as img:
-                    iw, ih = img.size
-                return ih > iw
-            except Exception:
-                return True
-
-        def _dims_from_path(p, max_w):
-            try:
-                with Image.open(p) as img:
-                    iw, ih = img.size
-                return self._img_dims(iw, ih, max_w)
-            except Exception:
-                return max_w, PAGE_H - 2 * MARGIN - 40
-
-        path1 = paths[0]
-        if _is_portrait(path1) and len(paths) >= 2 and _is_portrait(paths[1]):
-            _, dh1 = _dims_from_path(path1, 210)
-            _, dh2 = _dims_from_path(paths[1], 210)
-            return max(dh1, dh2)
-        else:
-            max_w = 240 if _is_portrait(path1) else 400
-            _, dh = _dims_from_path(path1, max_w)
-            return dh
 
     # ── Separator line ────────────────────────────────────────────────────────
     def draw_separator(self):
@@ -644,6 +819,9 @@ class PageWriter:
 
     # ── Overall Assessment page ───────────────────────────────────────────────
     def draw_overall_assessment(self, text):
+        if not text or not text.strip():
+            return
+
         # Always begin on a fresh page — prevents heading being orphaned from content
         self.new_page()
         self.draw_section_title('Overall Assessment', top_pad=8, bot_pad=10)
@@ -671,6 +849,7 @@ def build_pdf(data, uploaded_files, output_path):
     device = data.get('device', '')
     coverage_rows = data.get('coverage_rows', [])
     bugs = data.get('bugs', [])
+    sorted_bug_entries = sort_bug_entries_for_pdf(bugs, uploaded_files)
     assessment = data.get('assessment', '')
 
     # ── Page 1: Cover ────────────────────────────────────────────────────────
@@ -679,12 +858,13 @@ def build_pdf(data, uploaded_files, output_path):
     pw.draw_section_title('Test Coverage', top_pad=18, bot_pad=6)
     pw.draw_test_coverage_table(coverage_rows)
 
-    if bugs:
+    if sorted_bug_entries:
         pw.draw_section_title('Bug Summary', top_pad=14, bot_pad=6)
-        pw.draw_bug_summary_table(bugs)
+        pw.draw_bug_summary_table([entry['bug'] for entry in sorted_bug_entries])
 
     # ── Pages 2+: Bug Details ─────────────────────────────────────────────────
-    for idx, bug in enumerate(bugs):
+    for idx, entry in enumerate(sorted_bug_entries):
+        bug = entry['bug']
         btype = bug.get('type', 'BUG').upper()
         severity = bug.get('severity', '').upper()
         title = bug.get('title', '')
@@ -695,22 +875,20 @@ def build_pdf(data, uploaded_files, output_path):
         description = bug.get('description', '')
         is_fixed = bug.get('fixed', False)
         build_str = bug.get('fixed_build', '')
-        screenshots = uploaded_files.get(f'bug_{idx}', [])
+        screenshots = entry['screenshots']
 
-        # Compute total height needed: header + WWH + description + fixed note + first image
-        header_h = 36
+        # Reserve space only for the bug intro so the next item can start lower on
+        # the page when it still has room for a clean opening block.
         sep_h = 14
-        wwh_h = pw._wwh_height(what, where, how, is_fixed=is_fixed, build_str=build_str)
-        desc_lines = simpleSplit(description, 'Helvetica', 9, pw.content_w) if description else []
-        desc_h = (len(desc_lines) * 13 + 6) if desc_lines else 0
-        fixed_h = 10 if (is_fixed and build_str) else 0
-        first_img_h = (4 + pw._first_image_block_height(screenshots)) if screenshots else 0
-        total_need = header_h + wwh_h + desc_h + fixed_h + first_img_h
+        text_block_need = estimate_bug_start_height(pw, bug)
+        next_bug_start_need = 0
+        if idx + 1 < len(sorted_bug_entries):
+            next_bug_start_need = sep_h + estimate_bug_start_height(pw, sorted_bug_entries[idx + 1]['bug'])
 
         if idx == 0:
-            pw.need(total_need)
+            pw.need(text_block_need)
         else:
-            if pw.y - (sep_h + total_need) < MARGIN + 40:
+            if pw.y - (sep_h + text_block_need) < MARGIN + 40:
                 pw.new_page()
             else:
                 pw.draw_separator()
@@ -729,7 +907,7 @@ def build_pdf(data, uploaded_files, output_path):
 
         # Screenshots
         if screenshots:
-            pw.draw_screenshots(screenshots)
+            pw.draw_screenshots(screenshots, reserve_after=next_bug_start_need)
 
     # ── Last page: Overall Assessment ────────────────────────────────────────
     pw.draw_overall_assessment(assessment)
@@ -746,6 +924,8 @@ def index():
 
 @app.route('/generate', methods=['POST'])
 def generate():
+    cleanup_old_reports()
+
     # Parse form data
     app_name = request.form.get('app_name', 'App').strip()
     # Strip accidental "QA Test Report — " prefix if user typed the full title
@@ -773,96 +953,101 @@ def generate():
     bugs = []
     uploaded_files = {}
     saved_paths = []
-
-    for i in range(bug_count):
-        btype = request.form.get(f'bug_type_{i}', 'BUG')
-        severity = request.form.get(f'bug_severity_{i}', '')
-        title = request.form.get(f'bug_title_{i}', '')
-        area = request.form.get(f'bug_area_{i}', '')
-        what = clean_text(request.form.get(f'bug_what_{i}', ''))
-        where = clean_text(request.form.get(f'bug_where_{i}', ''))
-        how = clean_text(request.form.get(f'bug_how_{i}', ''))
-        description = clean_text(request.form.get(f'bug_description_{i}', ''))
-        fixed = request.form.get(f'bug_fixed_{i}', 'false') == 'true'
-        fixed_build = request.form.get(f'bug_fixed_build_{i}', '')
-
-        bugs.append({
-            'type': btype,
-            'severity': severity,
-            'title': title,
-            'area': area,
-            'what': what,
-            'where': where,
-            'how': how,
-            'description': description,
-            'fixed': fixed,
-            'fixed_build': fixed_build,
-        })
-
-        # Handle screenshots for this bug
-        file_key = f'bug_screenshots_{i}'
-        files = request.files.getlist(file_key)
-        bug_images = []
-        for f in files:
-            if f and f.filename:
-                ext = os.path.splitext(f.filename)[1].lower() or '.jpg'
-                fname = f'{uuid.uuid4().hex}{ext}'
-                fpath = os.path.join(app.config['UPLOAD_FOLDER'], fname)
-                f.save(fpath)
-                saved_paths.append(fpath)
-                bug_images.append(fpath)
-        if bug_images:
-            uploaded_files[f'bug_{i}'] = bug_images
-
-    data = {
-        'app_name': app_name,
-        'app_desc': app_desc,
-        'device': device,
-        'coverage_rows': coverage_rows,
-        'bugs': bugs,
-        'assessment': assessment,
-    }
-
-    # Generate PDF + JSON
-    slug = f'{app_name.replace(" ", "_")}_{uuid.uuid4().hex[:6]}'
-    out_name = f'QA_Report_{slug}.pdf'
-    out_path = os.path.join(app.config['OUTPUT_FOLDER'], out_name)
-    json_name = f'QA_Report_{slug}.json'
-    json_path = os.path.join(app.config['OUTPUT_FOLDER'], json_name)
+    out_path = None
+    json_path = None
 
     try:
-        build_pdf(data, uploaded_files, out_path)
-    finally:
-        for p in saved_paths:
-            try:
-                os.remove(p)
-            except Exception:
-                pass
+        for i in range(bug_count):
+            btype = request.form.get(f'bug_type_{i}', 'BUG')
+            severity = request.form.get(f'bug_severity_{i}', '')
+            title = request.form.get(f'bug_title_{i}', '')
+            area = request.form.get(f'bug_area_{i}', '')
+            what = clean_text(request.form.get(f'bug_what_{i}', ''))
+            where = clean_text(request.form.get(f'bug_where_{i}', ''))
+            how = clean_text(request.form.get(f'bug_how_{i}', ''))
+            description = clean_text(request.form.get(f'bug_description_{i}', ''))
+            fixed = request.form.get(f'bug_fixed_{i}', 'false') == 'true'
+            fixed_build = request.form.get(f'bug_fixed_build_{i}', '')
 
-    report_json = {
-        'app_name': app_name,
-        'app_desc': app_desc,
-        'device': device,
-        'assessment': assessment,
-        'coverage': coverage_rows,
-        'bugs': [
-            {
-                'type': b['type'],
-                'severity': b['severity'],
-                'title': b['title'],
-                'area': b['area'],
-                'what': b['what'],
-                'where': b['where'],
-                'how': b['how'],
-                'description': b['description'],
-                'fixed': b['fixed'],
-                'fixed_build': b['fixed_build'],
-            }
-            for b in bugs
-        ],
-    }
-    with open(json_path, 'w', encoding='utf-8') as fh:
-        json.dump(report_json, fh, ensure_ascii=False, indent=2)
+            bugs.append({
+                'type': btype,
+                'severity': severity,
+                'title': title,
+                'area': area,
+                'what': what,
+                'where': where,
+                'how': how,
+                'description': description,
+                'fixed': fixed,
+                'fixed_build': fixed_build,
+            })
+
+            # Validate screenshots on the backend so bad uploads fail fast and clearly.
+            file_key = f'bug_screenshots_{i}'
+            files = request.files.getlist(file_key)
+            bug_images = []
+            for f in files:
+                if f and f.filename:
+                    ext = validate_image_upload(f)
+                    fname = f'{uuid.uuid4().hex}{ext}'
+                    fpath = os.path.join(app.config['UPLOAD_FOLDER'], fname)
+                    f.save(fpath)
+                    saved_paths.append(fpath)
+                    bug_images.append(fpath)
+            if bug_images:
+                uploaded_files[f'bug_{i}'] = bug_images
+
+        data = {
+            'app_name': app_name,
+            'app_desc': app_desc,
+            'device': device,
+            'coverage_rows': coverage_rows,
+            'bugs': bugs,
+            'assessment': assessment,
+        }
+
+        # Generate PDF + JSON
+        slug = f'{build_report_slug(app_name)}_{uuid.uuid4().hex[:6]}'
+        out_name = f'{app.config["REPORT_PREFIX"]}{slug}.pdf'
+        out_path = os.path.join(app.config['OUTPUT_FOLDER'], out_name)
+        json_name = f'{app.config["REPORT_PREFIX"]}{slug}.json'
+        json_path = os.path.join(app.config['OUTPUT_FOLDER'], json_name)
+
+        build_pdf(data, uploaded_files, out_path)
+
+        report_json = {
+            'app_name': app_name,
+            'app_desc': app_desc,
+            'device': device,
+            'assessment': assessment,
+            'coverage': coverage_rows,
+            'bugs': [
+                {
+                    'type': b['type'],
+                    'severity': b['severity'],
+                    'title': b['title'],
+                    'area': b['area'],
+                    'what': b['what'],
+                    'where': b['where'],
+                    'how': b['how'],
+                    'description': b['description'],
+                    'fixed': b['fixed'],
+                    'fixed_build': b['fixed_build'],
+                }
+                for b in bugs
+            ],
+        }
+        with open(json_path, 'w', encoding='utf-8') as fh:
+            json.dump(report_json, fh, ensure_ascii=False, indent=2)
+    except ValueError as exc:
+        cleanup_paths(saved_paths)
+        cleanup_paths([out_path, json_path])
+        return jsonify({'error': str(exc)}), 400
+    except Exception:
+        cleanup_paths([out_path, json_path])
+        raise
+    finally:
+        cleanup_paths(saved_paths)
 
     return jsonify({'pdf_url': f'/download/{out_name}', 'json_url': f'/download/{json_name}',
                     'pdf_name': out_name, 'json_name': json_name})
@@ -878,9 +1063,16 @@ def download_file(filename):
     return send_file(fpath, as_attachment=True, download_name=filename)
 
 
+@app.errorhandler(413)
+def handle_request_too_large(_error):
+    limit_str = format_upload_limit()
+    return jsonify({'error': f'Uploaded files are too large. Max total upload size is {limit_str}.'}), 413
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5001)
+    parser.add_argument('--debug', action='store_true')
     args, _ = parser.parse_known_args()
-    app.run(debug=True, port=args.port)
+    app.run(debug=args.debug, port=args.port)

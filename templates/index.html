@@ -508,9 +508,13 @@
     });
 
     fetch('/generate', { method: 'POST', body: formData })
-    .then(res => {
-      if (!res.ok) throw new Error(`Server error: ${res.status}`);
-      return res.json();
+    .then(async res => {
+      const isJson = (res.headers.get('content-type') || '').includes('application/json');
+      const payload = isJson ? await res.json() : null;
+      if (!res.ok) {
+        throw new Error(payload?.error || `Server error: ${res.status}`);
+      }
+      return payload;
     })
     .then(data => {
       triggerDownload(data.pdf_url, data.pdf_name);
