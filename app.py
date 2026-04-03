@@ -32,6 +32,34 @@ def _smart_truncate(text, max_len=51):
     return candidate + '\u2026'
 
 
+def _build_header_title(app_name, max_len=60):
+    """Compose the main header title, capped at max_len chars."""
+    return _smart_truncate(f'QA Test Report \u2014 {app_name}', max_len)
+
+
+def _build_header_subtitle(app_name, app_desc, max_len=80):
+    """
+    Build subtitle from app_desc only (app_name already appears in the main title).
+    Removes segments from app_desc that are already present in app_name so that
+    no phrase appears twice across both lines.
+    """
+    if not app_desc:
+        return ''
+    name_lower = app_name.lower()
+    # Split on · or — separators
+    parts = re.split(r'\s*[\u00b7\u2014]\s*', app_desc)
+    seen: set = set()
+    kept = []
+    for part in parts:
+        part = part.strip()
+        part_lower = part.lower()
+        if part and part_lower not in seen and part_lower not in name_lower:
+            seen.add(part_lower)
+            kept.append(part)
+    subtitle = ' \u00b7 '.join(kept) if kept else app_desc
+    return _smart_truncate(subtitle, max_len)
+
+
 # ─── PDF Constants ────────────────────────────────────────────────────────────
 PAGE_W, PAGE_H = A4  # 595.28 x 841.89 pt
 MARGIN = 38
@@ -127,11 +155,11 @@ class PageWriter:
         # Main title
         self.c.setFillColor(COLOR_WHITE)
         self.c.setFont('Helvetica-Bold', 18)
-        self.c.drawString(x + 12, top - 28, f'QA Test Report \u2014 {app_name}')
+        self.c.drawString(x + 12, top - 28, _build_header_title(app_name))
 
-        # Subtitle
+        # Subtitle (app_desc only — app_name is already in the title above)
         self.c.setFont('Helvetica', 10)
-        subtitle = f'{app_name} \u2014 {app_desc}' if app_desc else app_name
+        subtitle = _build_header_subtitle(app_name, app_desc) or app_name
         self.c.drawString(x + 12, top - 46, subtitle)
 
         # Right side: tester / date / device
