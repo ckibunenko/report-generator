@@ -144,23 +144,49 @@ class PageWriter:
 
     # ── Cover header ──────────────────────────────────────────────────────────
     def draw_cover_header(self, app_name, app_desc, device):
-        header_h = 90
         x = self.margin
         top = self.y
+
+        # Wrap long header text to avoid clipping.
+        available_title_w = self.content_w - 24
+        title_text = f'QA Test Report \u2014 {app_name}'
+        subtitle_text = _build_header_subtitle(app_name, app_desc, max_len=300) or app_name
+
+        title_lines = simpleSplit(title_text, 'Helvetica-Bold', 18, available_title_w) or ['QA Test Report']
+        subtitle_lines = simpleSplit(subtitle_text, 'Helvetica', 10, available_title_w) or ['']
+
+        # Dynamic header height so wrapped lines never collide with bottom meta row.
+        title_start_offset = 28
+        title_line_h = 20
+        subtitle_start_gap = 18
+        subtitle_line_h = 12
+        meta_baseline_from_bottom = 14
+        min_gap_to_meta = 16
+
+        text_bottom_offset = title_start_offset + (len(title_lines) - 1) * title_line_h
+        if subtitle_lines and subtitle_lines[0]:
+            text_bottom_offset += subtitle_start_gap + (len(subtitle_lines) - 1) * subtitle_line_h
+        header_h = max(90, int(text_bottom_offset + min_gap_to_meta + meta_baseline_from_bottom))
 
         # Dark blue background
         self.c.setFillColor(COLOR_HEADER_BG)
         self.c.rect(x, top - header_h, self.content_w, header_h, fill=1, stroke=0)
 
-        # Main title
+        # Main title (wrapped)
         self.c.setFillColor(COLOR_WHITE)
         self.c.setFont('Helvetica-Bold', 18)
-        self.c.drawString(x + 12, top - 28, _build_header_title(app_name))
+        title_y = top - title_start_offset
+        for line in title_lines:
+            self.c.drawString(x + 12, title_y, line)
+            title_y -= title_line_h
 
-        # Subtitle (app_desc only — app_name is already in the title above)
-        self.c.setFont('Helvetica', 10)
-        subtitle = _build_header_subtitle(app_name, app_desc) or app_name
-        self.c.drawString(x + 12, top - 46, subtitle)
+        # Subtitle (wrapped)
+        if subtitle_lines and subtitle_lines[0]:
+            self.c.setFont('Helvetica', 10)
+            subtitle_y = top - title_start_offset - ((len(title_lines) - 1) * title_line_h) - subtitle_start_gap
+            for line in subtitle_lines:
+                self.c.drawString(x + 12, subtitle_y, line)
+                subtitle_y -= subtitle_line_h
 
         # Right side: tester / date / device
         date_str = datetime.now().strftime('%d.%m.%Y')
@@ -249,23 +275,32 @@ class PageWriter:
             self.content_w * 0.22,
         ]
         headers = ['#', 'Type / Severity', 'Issue Area', 'Status']
-        row_h = 22
+        base_row_h = 22
+        line_h = 11
+        row_vpad = 6
         x = self.margin
 
         # Table header
-        self.need(row_h + 4)
+        self.need(base_row_h + 4)
         self.c.setFillColor(COLOR_HEADER_BG)
-        self.c.rect(x, self.y - row_h, self.content_w, row_h, fill=1, stroke=0)
+        self.c.rect(x, self.y - base_row_h, self.content_w, base_row_h, fill=1, stroke=0)
         self.c.setFillColor(COLOR_WHITE)
         self.c.setFont('Helvetica-Bold', 9)
         cx = x
         for i, h in enumerate(headers):
-            self.c.drawString(cx + 6, self.y - row_h + 7, h)
+            self.c.drawString(cx + 6, self.y - base_row_h + 7, h)
             cx += col_w[i]
-        self.y -= row_h
+        self.y -= base_row_h
 
         for idx, bug in enumerate(bugs):
             is_fixed = bug.get('fixed', False)
+            area = bug.get('area', '')
+            title = bug.get('title', '')
+            area_title_raw = f'{area} \u2014 {title}' if area else title
+            max_area_w = col_w[2] - 12
+            area_lines = simpleSplit(area_title_raw, 'Helvetica', 9, max_area_w) or ['']
+            row_h = max(base_row_h, int(len(area_lines) * line_h + row_vpad * 2 + 2))
+
             self.need(row_h)
 
             if is_fixed:
@@ -280,9 +315,8 @@ class PageWriter:
 
             btype = bug.get('type', 'BUG').upper()
             severity = bug.get('severity', '').upper()
-            title = bug.get('title', '')
-            area = bug.get('area', '')
             build = bug.get('fixed_build', '')
+            center_y = self.y - (row_h / 2) - 3
 
             cx = x
             # # column
@@ -294,19 +328,19 @@ class PageWriter:
                 self.c.setStrokeColor(COLOR_TEXT)
                 self.c.setLineWidth(0.5)
                 sw = self.c.stringWidth(num_str, 'Helvetica-Bold', 9)
-                mid_y = self.y - row_h + 7 + 4
+                mid_y = center_y + 4
                 self.c.line(cx + 6, mid_y, cx + 6 + sw, mid_y)
                 self.c.restoreState()
-            self.c.drawString(cx + 6, self.y - row_h + 7, num_str)
+            self.c.drawString(cx + 6, center_y, num_str)
             cx += col_w[0]
 
-            # Type/Severity badge — same style as header bar: 9pt font, dynamic width
+            # Type/Severity badge - same style as header bar: 9pt font, dynamic width
             badge_label = btype if btype == 'SUGGESTION' else severity
             badge_color = get_severity_color(badge_label if btype == 'SUGGESTION' else severity)
             dot = '\u25cf '
             label_text = f'{dot}{badge_label}' if btype != 'SUGGESTION' else 'SUGGESTION'
             bh = 16
-            by = self.y - row_h + 3
+            by = self.y - row_h + ((row_h - bh) / 2)
             self.c.setFont('Helvetica-Bold', 9)
             bw = self.c.stringWidth(label_text, 'Helvetica-Bold', 9) + 12
             self.c.setFillColor(badge_color)
@@ -315,20 +349,24 @@ class PageWriter:
             self.c.drawString(cx + 4 + 6, by + 5, label_text)
             cx += col_w[1]
 
-            # Issue Area / Title
+            # Issue Area / Title (wrapped; no ellipsis)
             self.c.setFillColor(COLOR_TEXT)
             self.c.setFont('Helvetica', 9)
-            area_title = f'{area} \u2014 {title}' if area else title
-            area_title = _smart_truncate(area_title)
+            area_y = self.y - row_vpad - 9
             if is_fixed:
                 self.c.saveState()
                 self.c.setStrokeColor(COLOR_TEXT)
                 self.c.setLineWidth(0.4)
-                sw = self.c.stringWidth(area_title, 'Helvetica', 9)
-                mid_y = self.y - row_h + 7 + 4
-                self.c.line(cx + 6, mid_y, cx + 6 + sw, mid_y)
+                for line in area_lines:
+                    self.c.drawString(cx + 6, area_y, line)
+                    sw = self.c.stringWidth(line, 'Helvetica', 9)
+                    self.c.line(cx + 6, area_y + 3.5, cx + 6 + sw, area_y + 3.5)
+                    area_y -= line_h
                 self.c.restoreState()
-            self.c.drawString(cx + 6, self.y - row_h + 7, area_title)
+            else:
+                for line in area_lines:
+                    self.c.drawString(cx + 6, area_y, line)
+                    area_y -= line_h
             cx += col_w[2]
 
             # Status
@@ -338,9 +376,9 @@ class PageWriter:
                 status_text = '\u2713 FIXED'
                 if build:
                     status_text += f' {build}'
-                self.c.drawString(cx + 6, self.y - row_h + 7, status_text)
+                self.c.drawString(cx + 6, center_y, status_text)
             else:
-                self.c.drawString(cx + 6, self.y - row_h + 7, '')
+                self.c.drawString(cx + 6, center_y, '')
 
             self.y -= row_h
 
@@ -556,15 +594,14 @@ class PageWriter:
                 i += 1
 
     @staticmethod
-    def _img_dims(iw, ih, max_w):
-        """Scale to max_w, never up, preserve aspect ratio, cap at page height."""
-        dw = min(iw, max_w)
-        dh = dw * ih / iw
-        max_h = PAGE_H - 2 * MARGIN - 40
-        if dh > max_h:
-            dh = max_h
-            dw = dh * iw / ih
-        return dw, dh
+    def _img_dims(iw, ih, max_w, max_h=None):
+        """Scale into a bounding box, preserve aspect ratio, never upscale."""
+        if max_h is None:
+            max_h = PAGE_H - 2 * MARGIN - 40
+        if iw <= 0 or ih <= 0:
+            return max_w, max_h
+        scale = min(max_w / iw, max_h / ih, 1.0)
+        return iw * scale, ih * scale
 
     def _prepare_image(self, path, crop_aspect=None):
         """Convert image to RGB JPEG. crop_aspect=(w/h) crops to that ratio if given."""
@@ -599,9 +636,29 @@ class PageWriter:
         try:
             with Image.open(path) as img:
                 iw, ih = img.size
-            max_w = 240 if ih > iw else 400
-            dw, dh = self._img_dims(iw, ih, max_w)
-            self.need(dh + 12)
+            is_portrait = ih > iw
+            if is_portrait:
+                box_w = min(240, self.content_w)
+                box_h = 300
+            else:
+                box_w = min(400, self.content_w)
+                box_h = 230
+
+            dw, dh = self._img_dims(iw, ih, box_w, box_h)
+
+            # Prefer staying on the same page by scaling down to remaining space.
+            remaining_h = self.y - (self.margin + 40)
+            min_render_h = 140 if is_portrait else 110
+            if dh + 12 > remaining_h:
+                if remaining_h >= min_render_h:
+                    fit_h = min(box_h, remaining_h - 12)
+                    dw, dh = self._img_dims(iw, ih, box_w, fit_h)
+                else:
+                    self.need(dh + 12)
+
+            if dh + 12 > self.y - (self.margin + 40):
+                self.need(dh + 12)
+
             tmp = self._prepare_image(path)
             cx = self.margin + (self.content_w - dw) / 2
             self.c.drawImage(tmp, cx, self.y - dh, width=dw, height=dh)
@@ -614,17 +671,34 @@ class PageWriter:
             print(f'Image error {path}: {e}')
 
     def _draw_two_images(self, path1, path2):
-        MAX_W = 210
         GAP = 10
         try:
             with Image.open(path1) as img:
                 iw1, ih1 = img.size
             with Image.open(path2) as img:
                 iw2, ih2 = img.size
-            dw1, dh1 = self._img_dims(iw1, ih1, MAX_W)
-            dw2, dh2 = self._img_dims(iw2, ih2, MAX_W)
+
+            cell_w = min(230, (self.content_w - GAP) / 2)
+            cell_h = 280
+            dw1, dh1 = self._img_dims(iw1, ih1, cell_w, cell_h)
+            dw2, dh2 = self._img_dims(iw2, ih2, cell_w, cell_h)
             display_h = max(dh1, dh2)
-            self.need(display_h + 12)
+
+            # Prefer staying on the same page by scaling down to remaining space.
+            remaining_h = self.y - (self.margin + 40)
+            min_render_h = 140
+            if display_h + 12 > remaining_h:
+                if remaining_h >= min_render_h:
+                    fit_h = min(cell_h, remaining_h - 12)
+                    dw1, dh1 = self._img_dims(iw1, ih1, cell_w, fit_h)
+                    dw2, dh2 = self._img_dims(iw2, ih2, cell_w, fit_h)
+                    display_h = max(dh1, dh2)
+                else:
+                    self.need(display_h + 12)
+
+            if display_h + 12 > self.y - (self.margin + 40):
+                self.need(display_h + 12)
+
             tmp1 = self._prepare_image(path1)
             tmp2 = self._prepare_image(path2)
             total_w = dw1 + GAP + dw2
@@ -664,12 +738,17 @@ class PageWriter:
 
         path1 = paths[0]
         if _is_portrait(path1) and len(paths) >= 2 and _is_portrait(paths[1]):
-            _, dh1 = _dims_from_path(path1, 210)
-            _, dh2 = _dims_from_path(paths[1], 210)
+            cell_w = min(230, (self.content_w - 10) / 2)
+            _, dh1 = _dims_from_path(path1, cell_w)
+            _, dh2 = _dims_from_path(paths[1], cell_w)
+            dh1 = min(dh1, 280)
+            dh2 = min(dh2, 280)
             return max(dh1, dh2)
         else:
-            max_w = 240 if _is_portrait(path1) else 400
+            is_portrait = _is_portrait(path1)
+            max_w = 240 if is_portrait else 400
             _, dh = _dims_from_path(path1, max_w)
+            dh = min(dh, 300 if is_portrait else 230)
             return dh
 
     # ── Separator line ────────────────────────────────────────────────────────
@@ -764,6 +843,9 @@ def build_pdf(data, uploaded_files, output_path):
             pw.draw_fixed_note(build_str)
 
         # Narrative description
+        if description and description.strip():
+            pw.need(12)
+            pw.y -= 12
         pw.draw_description(description)
 
         # Screenshots
