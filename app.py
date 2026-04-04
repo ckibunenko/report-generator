@@ -19,6 +19,9 @@ app.config['OUTPUT_FOLDER'] = os.path.join(os.path.dirname(__file__), 'output')
 app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
 app.config['REPORT_PREFIX'] = 'QA_Report_'
 app.config['REPORT_TTL_SECONDS'] = 24 * 60 * 60
+app.config['SCREENSHOT_TARGET_MIN_BYTES'] = 100 * 1024
+app.config['SCREENSHOT_TARGET_MAX_BYTES'] = 300 * 1024
+app.config['SCREENSHOT_KEEP_ORIGINAL_MAX_BYTES'] = 300 * 1024
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
@@ -28,6 +31,11 @@ ALLOWED_IMAGE_FORMATS = {
     'JPEG': '.jpg',
     'WEBP': '.webp',
 }
+
+SCREENSHOT_WEBP_QUALITIES = [90, 86, 82, 78, 74, 70, 66, 62]
+SCREENSHOT_RESIZE_SCALES = [0.92, 0.85, 0.78, 0.7, 0.62, 0.55]
+SCREENSHOT_RESIZE_QUALITIES = [80, 74, 68, 62, 56, 52]
+RESAMPLING_LANCZOS = getattr(Image, 'Resampling', Image).LANCZOS
 
 # ─── PDF Constants ────────────────────────────────────────────────────────────
 PAGE_W, PAGE_H = A4  # 595.28 x 841.89 pt
@@ -146,6 +154,91 @@ def validate_image_upload(file_storage):
         )
 
     return ALLOWED_IMAGE_FORMATS[image_format]
+
+
+def _flatten_image_to_rgb(img):
+    if img.mode in ('RGBA', 'LA'):
+        base = Image.new('RGB', img.size, (255, 255, 255))
+        base.paste(img, mask=img.getchannel('A'))
+        return base
+
+    if img.mode == 'P':
+        if 'transparency' in img.info:
+            rgba = img.convert('RGBA')
+            base = Image.new('RGB', rgba.size, (255, 255, 255))
+            base.paste(rgba, mask=rgba.getchannel('A'))
+            return base
+        return img.convert('RGB')
+
+    if img.mode != 'RGB':
+        return img.convert('RGB')
+
+    return img.copy()
+
+
+def _encode_image_bytes(img, image_format, **save_kwargs):
+    buffer = io.BytesIO()
+    img.save(buffer, format=image_format, **save_kwargs)
+    return buffer.getvalue()
+
+
+def _resize_image(img, scale):
+    width, height = img.size
+    resized = (
+        max(1, int(round(width * scale))),
+        max(1, int(round(height * scale))),
+    )
+    if resized == img.size:
+        return img.copy()
+    return img.resize(resized, RESAMPLING_LANCZOS)
+
+
+def optimize_uploaded_image(file_storage, original_ext):
+    original_bytes = file_storage.stream.read()
+    file_storage.stream.seek(0)
+
+    if len(original_bytes) <= app.config['SCREENSHOT_KEEP_ORIGINAL_MAX_BYTES']:
+        return original_bytes, original_ext
+
+    target_max = app.config['SCREENSHOT_TARGET_MAX_BYTES']
+    best_bytes = original_bytes
+    best_ext = original_ext
+
+    with Image.open(io.BytesIO(original_bytes)) as source_img:
+        source_img.load()
+        base_img = _flatten_image_to_rgb(source_img)
+
+    def consider_candidate(img, quality):
+        nonlocal best_bytes, best_ext
+        try:
+            encoded = _encode_image_bytes(
+                img,
+                'WEBP',
+                quality=quality,
+                method=6,
+            )
+            if len(encoded) < len(best_bytes):
+                best_bytes = encoded
+                best_ext = '.webp'
+            if len(encoded) <= target_max:
+                return encoded, '.webp'
+        except Exception:
+            return None
+        return None
+
+    for quality in SCREENSHOT_WEBP_QUALITIES:
+        result = consider_candidate(base_img, quality)
+        if result:
+            return result
+
+    for scale in SCREENSHOT_RESIZE_SCALES:
+        resized = _resize_image(base_img, scale)
+        for quality in SCREENSHOT_RESIZE_QUALITIES:
+            result = consider_candidate(resized, quality)
+            if result:
+                return result
+
+    return best_bytes, best_ext
 
 
 def format_upload_limit():
@@ -1222,9 +1315,11 @@ def generate():
             for f in files:
                 if f and f.filename:
                     ext = validate_image_upload(f)
+                    optimized_bytes, ext = optimize_uploaded_image(f, ext)
                     fname = f'{uuid.uuid4().hex}{ext}'
                     fpath = os.path.join(app.config['UPLOAD_FOLDER'], fname)
-                    f.save(fpath)
+                    with open(fpath, 'wb') as image_file:
+                        image_file.write(optimized_bytes)
                     saved_paths.append(fpath)
                     bug_images.append(fpath)
             if bug_images:

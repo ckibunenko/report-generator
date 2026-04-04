@@ -8,6 +8,7 @@ import unittest
 from PIL import Image
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
+from werkzeug.datastructures import FileStorage
 
 from app import (
     MARGIN,
@@ -17,7 +18,9 @@ from app import (
     app as flask_app,
     build_cover_subtitle,
     estimate_bug_start_height,
+    optimize_uploaded_image,
     sort_bug_entries_for_pdf,
+    validate_image_upload,
 )
 
 
@@ -57,6 +60,13 @@ class ReportGeneratorTests(unittest.TestCase):
         image.save(buf, format='PNG')
         buf.seek(0)
         return buf, filename
+
+    @staticmethod
+    def noisy_png_bytes(size=(1000, 2200)):
+        image = Image.effect_noise(size, 95).convert('RGB')
+        buf = io.BytesIO()
+        image.save(buf, format='PNG')
+        return buf.getvalue()
 
     def test_generate_sanitizes_app_name_for_output_files(self):
         response = self.client.post('/generate', data={'app_name': 'A/B', 'bug_count': '0'})
@@ -134,6 +144,42 @@ class ReportGeneratorTests(unittest.TestCase):
         self.assertEqual(os.listdir(self.upload_dir), [])
         self.assertEqual(os.listdir(self.output_dir), [])
 
+    def test_optimize_uploaded_image_reduces_large_files_and_keeps_aspect_ratio(self):
+        original_bytes = self.noisy_png_bytes()
+        file_storage = FileStorage(stream=io.BytesIO(original_bytes), filename='large.png')
+
+        original_ext = validate_image_upload(file_storage)
+        optimized_bytes, optimized_ext = optimize_uploaded_image(file_storage, original_ext)
+
+        self.assertGreater(len(original_bytes), flask_app.config['SCREENSHOT_TARGET_MAX_BYTES'])
+        self.assertLess(len(optimized_bytes), len(original_bytes))
+        self.assertEqual(optimized_ext, '.webp')
+
+        with Image.open(io.BytesIO(original_bytes)) as original_img:
+            original_size = original_img.size
+        with Image.open(io.BytesIO(optimized_bytes)) as optimized_img:
+            optimized_size = optimized_img.size
+
+        self.assertLessEqual(optimized_size[0], original_size[0])
+        self.assertLessEqual(optimized_size[1], original_size[1])
+        self.assertAlmostEqual(
+            optimized_size[0] / optimized_size[1],
+            original_size[0] / original_size[1],
+            places=2,
+        )
+        self.assertLess(len(optimized_bytes), len(original_bytes) * 0.5)
+
+    def test_optimize_uploaded_image_keeps_small_files_as_is(self):
+        original_buf, _ = self.png_upload('small.png')
+        original_bytes = original_buf.getvalue()
+        file_storage = FileStorage(stream=io.BytesIO(original_bytes), filename='small.png')
+
+        original_ext = validate_image_upload(file_storage)
+        optimized_bytes, optimized_ext = optimize_uploaded_image(file_storage, original_ext)
+
+        self.assertEqual(optimized_ext, '.png')
+        self.assertEqual(optimized_bytes, original_bytes)
+
     def test_generate_cleans_stale_reports(self):
         stale_pdf = os.path.join(self.output_dir, 'QA_Report_old.pdf')
         stale_json = os.path.join(self.output_dir, 'QA_Report_old.json')
@@ -178,6 +224,30 @@ class ReportGeneratorTests(unittest.TestCase):
             response.get_json()['error'],
             'Uploaded files are too large. Max total upload size is 200 bytes.',
         )
+
+    def test_generate_accepts_large_screenshot_after_compression(self):
+        response = self.client.post(
+            '/generate',
+            data={
+                'app_name': 'Compressed Upload',
+                'bug_count': '1',
+                'bug_type_0': 'BUG',
+                'bug_severity_0': 'MEDIUM',
+                'bug_title_0': 'Large screenshot',
+                'bug_area_0': 'Upload',
+                'bug_what_0': 'Large image upload',
+                'bug_where_0': 'Form',
+                'bug_how_0': 'Upload a large screenshot',
+                'bug_description_0': 'Should still generate successfully',
+                'bug_fixed_0': 'false',
+                'bug_screenshots_0': (io.BytesIO(self.noisy_png_bytes()), 'large.png'),
+            },
+            content_type='multipart/form-data',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(os.path.exists(os.path.join(self.output_dir, payload['pdf_name'])))
 
     def test_pdf_bug_sorting_orders_by_severity_then_suggestions(self):
         bugs = [
