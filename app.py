@@ -16,7 +16,8 @@ import io
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['OUTPUT_FOLDER'] = os.path.join(os.path.dirname(__file__), 'output')
-app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
+# Internal tool: allow larger raw uploads because screenshots are optimized after receipt.
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 app.config['REPORT_PREFIX'] = 'QA_Report_'
 app.config['REPORT_TTL_SECONDS'] = 24 * 60 * 60
 app.config['SCREENSHOT_TARGET_MIN_BYTES'] = 100 * 1024

@@ -44,7 +44,7 @@ class ReportGeneratorTests(unittest.TestCase):
             TESTING=True,
             UPLOAD_FOLDER=self.upload_dir,
             OUTPUT_FOLDER=self.output_dir,
-            MAX_CONTENT_LENGTH=25 * 1024 * 1024,
+            MAX_CONTENT_LENGTH=500 * 1024 * 1024,
             REPORT_TTL_SECONDS=60,
         )
         self.client = flask_app.test_client()
