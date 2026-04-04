@@ -186,6 +186,7 @@ body {
 
 input[type="text"],
 input[type="email"],
+input[type="date"],
 select,
 textarea {
   background: var(--color-bg);
@@ -205,6 +206,7 @@ input[type="text"]::placeholder,
 textarea::placeholder { color: var(--color-text-dim); }
 
 input[type="text"]:focus,
+input[type="date"]:focus,
 select:focus,
 textarea:focus {
   outline: none;
@@ -229,12 +231,20 @@ select:disabled {
 
 textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
 
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.8);
+  cursor: pointer;
+}
+
 .form-grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 14px;
   margin-bottom: 14px;
 }
+
+.date-config-row { margin-bottom: 14px; }
+.date-range-row { margin-top: -2px; }
 
 /* ── Coverage Table ─────────────────────────────────────────────────────── */
 .coverage-table {

@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 import time
@@ -6,6 +7,7 @@ import unittest
 
 from PIL import Image
 from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
 
 from app import (
     MARGIN,
@@ -13,6 +15,7 @@ from app import (
     PAGE_W,
     PageWriter,
     app as flask_app,
+    build_cover_subtitle,
     estimate_bug_start_height,
     sort_bug_entries_for_pdf,
 )
@@ -64,6 +67,47 @@ class ReportGeneratorTests(unittest.TestCase):
         self.assertNotIn('/', payload['pdf_name'])
         self.assertTrue(os.path.exists(os.path.join(self.output_dir, payload['pdf_name'])))
         self.assertTrue(os.path.exists(os.path.join(self.output_dir, payload['json_name'])))
+
+    def test_generate_supports_date_range_and_persists_it_in_json(self):
+        response = self.client.post(
+            '/generate',
+            data={
+                'app_name': 'Range Test',
+                'report_date_mode': 'range',
+                'report_start_date': '2026-04-01',
+                'report_end_date': '2026-04-03',
+                'bug_count': '0',
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        json_path = os.path.join(self.output_dir, payload['json_name'])
+        with open(json_path, 'r', encoding='utf-8') as fh:
+            exported = json.load(fh)
+
+        self.assertEqual(exported['report_date_mode'], 'range')
+        self.assertEqual(exported['report_start_date'], '2026-04-01')
+        self.assertEqual(exported['report_end_date'], '2026-04-03')
+        self.assertEqual(exported['report_date'], '')
+
+    def test_generate_rejects_invalid_date_range(self):
+        response = self.client.post(
+            '/generate',
+            data={
+                'app_name': 'Bad Range',
+                'report_date_mode': 'range',
+                'report_start_date': '2026-04-05',
+                'report_end_date': '2026-04-03',
+                'bug_count': '0',
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()['error'],
+            'End date must be the same as or later than start date.',
+        )
 
     def test_generate_rejects_invalid_image_uploads(self):
         response = self.client.post(
@@ -191,6 +235,29 @@ class ReportGeneratorTests(unittest.TestCase):
             writer._target_block_height(400, writer.MIN_TRAILING_IMAGE_HEIGHT, reserve_after=20),
             170,
         )
+
+    def test_cover_subtitle_avoids_repeating_app_name_content(self):
+        self.assertEqual(
+            build_cover_subtitle('PlateBird — Calorie Tracker · iOS App Testing', 'Calorie Tracker'),
+            '',
+        )
+
+    def test_description_layout_wraps_to_inner_card_width(self):
+        pdf = canvas.Canvas(io.BytesIO())
+        writer = PageWriter(pdf, PAGE_W, PAGE_H, MARGIN)
+        text = (
+            'This is a longer description line that should wrap inside the description '
+            'card and never overflow beyond its right padding.'
+        )
+
+        layout = writer._description_layout(text)
+
+        self.assertGreater(layout['text_w'], 0)
+        for line in layout['lines']:
+            self.assertLessEqual(
+                pdfmetrics.stringWidth(line, 'Helvetica', layout['font_size']),
+                layout['text_w'] + 0.1,
+            )
 
 
 if __name__ == '__main__':

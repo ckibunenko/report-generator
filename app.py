@@ -35,22 +35,40 @@ MARGIN = 38
 CONTENT_W = PAGE_W - 2 * MARGIN
 
 # Colors
-COLOR_HEADER_BG      = colors.HexColor('#1a2744')
-COLOR_BUG_HIGH       = colors.HexColor('#d93025')
-COLOR_BUG_MEDIUM     = colors.HexColor('#e8622a')
-COLOR_BUG_LOW        = colors.HexColor('#f5a623')
-COLOR_SUGGESTION     = colors.HexColor('#4a90d9')
-COLOR_LABEL_BG       = colors.HexColor('#f0f0f0')
-COLOR_TEXT           = colors.HexColor('#1a1a1a')
+COLOR_HEADER_BG      = colors.HexColor('#1b2742')
+COLOR_HEADER_BG_SOFT = colors.HexColor('#2a3a5d')
+COLOR_BUG_HIGH       = colors.HexColor('#c74b3b')
+COLOR_BUG_MEDIUM     = colors.HexColor('#dc8b35')
+COLOR_BUG_LOW        = colors.HexColor('#d9ae4c')
+COLOR_SUGGESTION     = colors.HexColor('#5f86c5')
+COLOR_ACCENT         = colors.HexColor('#d39a55')
+COLOR_ACCENT_SOFT    = colors.HexColor('#f3e3cf')
+COLOR_PAGE_BG        = colors.HexColor('#f7f2e9')
+COLOR_SURFACE        = colors.HexColor('#f7f3ec')
+COLOR_SURFACE_ALT    = colors.HexColor('#fbf8f2')
+COLOR_LABEL_BG       = colors.HexColor('#efe8dc')
+COLOR_LABEL_WHAT     = colors.HexColor('#f4e2cd')
+COLOR_LABEL_WHERE    = colors.HexColor('#e4ebf5')
+COLOR_LABEL_HOW      = colors.HexColor('#e1efe7')
+COLOR_TEXT           = colors.HexColor('#1b2333')
+COLOR_TEXT_MUTED     = colors.HexColor('#697286')
 COLOR_WHITE          = colors.HexColor('#ffffff')
 COLOR_GREEN          = colors.HexColor('#2e7d32')
-COLOR_FIXED_BG       = colors.HexColor('#e8f5e9')
-COLOR_FIXED_HEADER   = colors.HexColor('#2e7d32')
-COLOR_TABLE_ALT      = colors.HexColor('#f8f8f8')
-COLOR_SEPARATOR      = colors.HexColor('#cccccc')
-COLOR_NARRATIVE      = colors.HexColor('#444444')
+COLOR_FIXED_BG       = colors.HexColor('#e8f2eb')
+COLOR_FIXED_HEADER   = colors.HexColor('#2f6a4f')
+COLOR_TABLE_ALT      = colors.HexColor('#faf6ef')
+COLOR_SEPARATOR      = colors.HexColor('#d7cfc2')
+COLOR_NARRATIVE      = colors.HexColor('#4d5769')
 COLOR_BADGE_TEXT     = colors.HexColor('#ffffff')
-COLOR_STATUS_GREEN   = colors.HexColor('#2e7d32')
+COLOR_STATUS_GREEN   = colors.HexColor('#2f7a4c')
+COLOR_PANEL_BORDER   = colors.HexColor('#d8cfc2')
+COLOR_IMAGE_FRAME    = colors.HexColor('#efe6d7')
+
+WWH_LABEL_COLORS = {
+    'WHAT:': COLOR_LABEL_WHAT,
+    'WHERE:': COLOR_LABEL_WHERE,
+    'HOW:': COLOR_LABEL_HOW,
+}
 
 SEVERITY_COLORS = {
     'HIGH':       COLOR_BUG_HIGH,
@@ -139,6 +157,49 @@ def format_upload_limit():
     return f'{limit} bytes'
 
 
+def parse_iso_date(value, field_label):
+    try:
+        return datetime.strptime(value, '%Y-%m-%d')
+    except ValueError as exc:
+        raise ValueError(f'{field_label} must use YYYY-MM-DD format.') from exc
+
+
+def build_report_date_context(report_date_mode, report_date, report_start_date, report_end_date):
+    mode = report_date_mode if report_date_mode in {'single', 'range'} else 'single'
+
+    if mode == 'range':
+        if not report_start_date or not report_end_date:
+            raise ValueError('Please select both start and end dates for a date range report.')
+
+        start_dt = parse_iso_date(report_start_date, 'Start date')
+        end_dt = parse_iso_date(report_end_date, 'End date')
+        if end_dt < start_dt:
+            raise ValueError('End date must be the same as or later than start date.')
+
+        if start_dt.date() == end_dt.date():
+            label = start_dt.strftime('%d.%m.%Y')
+        else:
+            label = f'{start_dt.strftime("%d.%m.%Y")} - {end_dt.strftime("%d.%m.%Y")}'
+
+        return {
+            'mode': 'range',
+            'date': '',
+            'start_date': report_start_date,
+            'end_date': report_end_date,
+            'label': label,
+        }
+
+    normalized_date = report_date or datetime.now().strftime('%Y-%m-%d')
+    report_dt = parse_iso_date(normalized_date, 'Report date')
+    return {
+        'mode': 'single',
+        'date': normalized_date,
+        'start_date': '',
+        'end_date': '',
+        'label': report_dt.strftime('%d.%m.%Y'),
+    }
+
+
 def wrap_pdf_text(text, font_name, font_size, max_width, max_lines=None):
     lines = simpleSplit(text, font_name, font_size, max_width)
     if not max_lines or len(lines) <= max_lines:
@@ -153,6 +214,15 @@ def wrap_pdf_text(text, font_name, font_size, max_width, max_lines=None):
 
     truncated[-1] = (last_line + ellipsis) if last_line else ellipsis
     return truncated
+
+
+def build_cover_subtitle(app_name, app_desc):
+    app_name_norm = ' '.join((app_name or '').lower().split())
+    app_desc_norm = ' '.join((app_desc or '').lower().split())
+
+    if app_desc and app_desc_norm and app_desc_norm not in app_name_norm:
+        return app_desc
+    return ''
 
 
 def bug_sort_key(entry):
@@ -185,8 +255,13 @@ def sort_bug_entries_for_pdf(bugs, uploaded_files):
 
 def estimate_bug_start_height(pw, bug):
     what = bug.get('what', '')
-
-    header_h = 36
+    header_h = pw._bug_header_layout(
+        bug.get('type', 'BUG'),
+        bug.get('severity', ''),
+        bug.get('title', ''),
+        bug.get('area', ''),
+        bug.get('fixed', False),
+    )['height']
     what_h = pw._wwh_block_height(what)
     return header_h + what_h + 4
 
@@ -197,6 +272,7 @@ class PageWriter:
     MIN_INLINE_PAIR_HEIGHT = 180
     MIN_TRAILING_IMAGE_HEIGHT = 140
     MIN_TRAILING_PAIR_HEIGHT = 120
+    IMAGE_CARD_PAD = 10
 
     def __init__(self, c, page_w, page_h, margin):
         self.c = c
@@ -206,6 +282,21 @@ class PageWriter:
         self.content_w = page_w - 2 * margin
         self.y = page_h - margin
         self.page_num = 1
+        self._paint_page_background()
+
+    def _paint_page_background(self):
+        self.c.setFillColor(COLOR_PAGE_BG)
+        self.c.rect(0, 0, self.page_w, self.page_h, fill=1, stroke=0)
+        self.c.setFillColor(COLOR_WHITE)
+        self.c.roundRect(
+            self.margin - 8,
+            self.margin - 4,
+            self.content_w + 16,
+            self.page_h - (self.margin * 2) + 18,
+            14,
+            fill=1,
+            stroke=0,
+        )
 
     def _draw_footer(self, is_last=False):
         self.c.setFont('Helvetica', 8)
@@ -229,84 +320,167 @@ class PageWriter:
             self._draw_footer()
             self.c.showPage()
             self.page_num += 1
+            self._paint_page_background()
             self.y = self.page_h - self.margin
 
     def new_page(self):
         self._draw_footer()
         self.c.showPage()
         self.page_num += 1
+        self._paint_page_background()
         self.y = self.page_h - self.margin
 
-    # ── Cover header ──────────────────────────────────────────────────────────
-    def draw_cover_header(self, app_name, app_desc, device):
-        title_text = f'QA Test Report \u2014 {app_name}'
-        title_lines = wrap_pdf_text(title_text, 'Helvetica-Bold', 18, self.content_w - 24, max_lines=2)
-        subtitle = f'{app_name} \u2014 {app_desc}' if app_desc else app_name
-        subtitle_lines = wrap_pdf_text(subtitle, 'Helvetica', 10, self.content_w - 24, max_lines=2) if subtitle else []
+    def _draw_pill(self, x, y, text, bg_color, text_color=COLOR_WHITE, font_size=8, pad_x=7, height=16):
+        width = self.c.stringWidth(text, 'Helvetica-Bold', font_size) + pad_x * 2
+        self.c.setFillColor(bg_color)
+        self.c.roundRect(x, y, width, height, 4, fill=1, stroke=0)
+        self.c.setFillColor(text_color)
+        self.c.setFont('Helvetica-Bold', font_size)
+        self.c.drawString(x + pad_x, y + (height - font_size) / 2 + 1, text)
+        return width
 
-        header_h = 90 + max(0, len(title_lines) - 1) * 20 + max(0, len(subtitle_lines) - 1) * 12
+    def _draw_info_card(self, x, y, width, height, label, value):
+        self.c.setFillColor(COLOR_HEADER_BG_SOFT)
+        self.c.roundRect(x, y, width, height, 8, fill=1, stroke=0)
+        self.c.setFillColor(COLOR_ACCENT_SOFT)
+        self.c.setFont('Helvetica-Bold', 6.5)
+        self.c.drawString(x + 8, y + height - 12, label.upper())
+        value_lines = wrap_pdf_text(str(value), 'Helvetica-Bold', 7.8, width - 16, max_lines=2)
+        self.c.setFillColor(COLOR_WHITE)
+        self.c.setFont('Helvetica-Bold', 7.8)
+        line_y = y + height - 26
+        for line in value_lines:
+            self.c.drawString(x + 8, line_y, line)
+            line_y -= 10
+
+    def _draw_image_frame(self, x, y, width, height):
+        pad = self.IMAGE_CARD_PAD
+        self.c.setFillColor(COLOR_IMAGE_FRAME)
+        self.c.roundRect(x - pad, y - pad, width + pad * 2, height + pad * 2, 10, fill=1, stroke=0)
+        self.c.setFillColor(COLOR_WHITE)
+        self.c.roundRect(x - pad + 2, y - pad + 2, width + (pad - 2) * 2, height + (pad - 2) * 2, 9, fill=1, stroke=0)
+
+    def _bug_header_layout(self, btype, severity, title, area, is_fixed=False):
+        x = self.margin
+        is_suggestion = str(btype).upper() == 'SUGGESTION'
+        num_label = 'SUGGESTION' if is_suggestion else 'BUG'
+        pill_color = COLOR_SUGGESTION if is_suggestion else COLOR_HEADER_BG_SOFT
+        sev_label = f'\u25cf {str(severity).upper()}' if (not is_suggestion and severity) else ''
+        cur_x = x + 14
+        first_pill_w = self.c.stringWidth(f'{num_label} #88', 'Helvetica-Bold', 8) + 14
+        cur_x += first_pill_w + 8
+        if sev_label:
+            sev_w = self.c.stringWidth(sev_label, 'Helvetica-Bold', 8) + 14
+            cur_x += sev_w + 10
+        fixed_w = self.c.stringWidth('\u2713 FIXED', 'Helvetica-Bold', 8) + 24 if is_fixed else 0
+        remaining_w = self.content_w - (cur_x - x) - fixed_w - 14
+        title_lines = wrap_pdf_text(title or 'Untitled finding', 'Helvetica-Bold', 10.6, remaining_w, max_lines=2)
+        bar_h = 38 + max(0, len(title_lines) - 1) * 12
+        return {
+            'height': max(42, bar_h),
+            'x': cur_x,
+            'remaining_w': remaining_w,
+            'is_suggestion': is_suggestion,
+            'num_label': num_label,
+            'pill_color': pill_color,
+            'sev_label': sev_label,
+            'title_lines': title_lines,
+        }
+
+    # ── Cover header ──────────────────────────────────────────────────────────
+    def draw_cover_header(self, app_name, app_desc, device, report_date_label):
+        title_lines = wrap_pdf_text(app_name, 'Helvetica-Bold', 18, self.content_w - 34, max_lines=2)
+        subtitle = build_cover_subtitle(app_name, app_desc)
+        subtitle_lines = wrap_pdf_text(subtitle, 'Helvetica', 9.5, self.content_w - 34, max_lines=2) if subtitle else []
+
+        card_h = 38
+        top_pad = 18
+        eyebrow_gap = 16
+        title_gap = 18
+        subtitle_gap = 14 if subtitle_lines else 0
+        title_block_h = len(title_lines) * 20
+        subtitle_block_h = len(subtitle_lines) * 11
+        header_h = top_pad + eyebrow_gap + title_block_h + title_gap + subtitle_block_h + subtitle_gap + card_h + 18
         x = self.margin
         top = self.y
 
-        # Dark blue background
+        self.c.setFillColor(COLOR_ACCENT)
+        self.c.roundRect(x, top - header_h, self.content_w, header_h, 12, fill=1, stroke=0)
+
         self.c.setFillColor(COLOR_HEADER_BG)
-        self.c.rect(x, top - header_h, self.content_w, header_h, fill=1, stroke=0)
+        self.c.roundRect(x, top - header_h + 4, self.content_w, header_h - 4, 12, fill=1, stroke=0)
+
+        self.c.setFillColor(COLOR_ACCENT)
+        self.c.roundRect(x + 16, top - 18, 56, 6, 3, fill=1, stroke=0)
+        self.c.setFillColor(COLOR_ACCENT_SOFT)
+        self.c.setFont('Helvetica-Bold', 7)
+        self.c.drawString(x + 16, top - 32, 'QA REPORT')
 
         # Main title
         self.c.setFillColor(COLOR_WHITE)
         self.c.setFont('Helvetica-Bold', 18)
-        title_y = top - 28
+        title_y = top - 58
         for idx, line in enumerate(title_lines):
             baseline = title_y - idx * 20
             if idx == 0:
-                self.c.drawString(x + 12, baseline, line)
+                self.c.drawString(x + 16, baseline, line)
             else:
                 self.c.drawCentredString(x + self.content_w / 2, baseline, line)
 
         # Subtitle
-        self.c.setFont('Helvetica', 10)
-        subtitle_y = title_y - len(title_lines) * 20 + 2
-        for idx, line in enumerate(subtitle_lines):
-            self.c.drawString(x + 12, subtitle_y - idx * 12, line)
+        if subtitle_lines:
+            self.c.setFont('Helvetica', 9.5)
+            self.c.setFillColor(COLOR_ACCENT_SOFT)
+            subtitle_y = title_y - title_block_h - 8
+            for idx, line in enumerate(subtitle_lines):
+                self.c.drawString(x + 16, subtitle_y - idx * 11, line)
 
-        # Right side: tester / date / device
-        date_str = datetime.now().strftime('%d.%m.%Y')
-        info_items = [
-            f'Tester: Aleksandar Parabucki',
-            f'Date: {date_str}',
-            f'Device: {device}',
+        # Bottom info cards
+        chip_inset = 10
+        chip_y = top - header_h + 18
+        gap = 12
+        chip_total_w = self.content_w - chip_inset * 2
+        chip_w = (chip_total_w - gap * 2) / 3
+        cards = [
+            ('Tester', 'Aleksandar Parabucki'),
+            ('Date', report_date_label),
+            ('Device', device or 'Not specified'),
         ]
-        self.c.setFont('Helvetica', 8)
-        item_w = self.content_w / 3
-        self.c.setFillColor(COLOR_WHITE)
-        for i, item in enumerate(info_items):
-            ix = x + i * item_w
-            self.c.drawString(ix + 10, top - header_h + 14, item)
+        for idx, (label, value) in enumerate(cards):
+            self._draw_info_card(x + chip_inset + idx * (chip_w + gap), chip_y, chip_w, card_h, label, value)
 
-        self.y = top - header_h - 10
+        self.y = top - header_h - 12
 
     # ── Section title ─────────────────────────────────────────────────────────
     def draw_section_title(self, title, top_pad=16, bot_pad=8):
         self.y -= top_pad
-        self.need(30)
-        self.c.setFont('Helvetica-Bold', 12)
+        self.need(40)
+        self.c.setFillColor(COLOR_ACCENT)
+        self.c.roundRect(self.margin, self.y - 2, 24, 5, 2.5, fill=1, stroke=0)
+        self.c.setFont('Helvetica-Bold', 13.5)
         self.c.setFillColor(COLOR_TEXT)
-        self.c.drawString(self.margin, self.y, title)
+        title_x = self.margin + 34
+        self.c.drawString(title_x, self.y, title)
+        title_w = self.c.stringWidth(title, 'Helvetica-Bold', 13.5)
+        rule_y = self.y - 2
+        self.c.setStrokeColor(COLOR_SEPARATOR)
+        self.c.setLineWidth(0.8)
+        self.c.line(title_x + title_w + 14, rule_y, self.margin + self.content_w, rule_y)
         self.y -= bot_pad
 
     # ── Test Coverage table ───────────────────────────────────────────────────
     def draw_test_coverage_table(self, rows):
         col_w = [self.content_w * 0.35, self.content_w * 0.45, self.content_w * 0.20]
         headers = ['Area', 'Scope', 'Result']
-        row_h = 20
+        row_h = 22
         x = self.margin
 
         # Table header
         self.need(row_h + 4)
         self.c.setFillColor(COLOR_HEADER_BG)
         self.c.rect(x, self.y - row_h, self.content_w, row_h, fill=1, stroke=0)
-        self.c.setFillColor(COLOR_WHITE)
-        self.c.setFont('Helvetica-Bold', 9)
+        self.c.setFillColor(COLOR_ACCENT_SOFT)
+        self.c.setFont('Helvetica-Bold', 8)
         cx = x
         for i, h in enumerate(headers):
             self.c.drawString(cx + 6, self.y - row_h + 6, h)
@@ -316,11 +490,11 @@ class PageWriter:
         # Rows
         for idx, row in enumerate(rows):
             self.need(row_h)
-            bg = COLOR_TABLE_ALT if idx % 2 == 0 else COLOR_WHITE
+            bg = COLOR_TABLE_ALT if idx % 2 == 0 else COLOR_SURFACE_ALT
             self.c.setFillColor(bg)
             self.c.rect(x, self.y - row_h, self.content_w, row_h, fill=1, stroke=0)
             # light border
-            self.c.setStrokeColor(COLOR_SEPARATOR)
+            self.c.setStrokeColor(COLOR_PANEL_BORDER)
             self.c.setLineWidth(0.3)
             self.c.line(x, self.y - row_h, x + self.content_w, self.y - row_h)
 
@@ -331,18 +505,14 @@ class PageWriter:
             for i, val in enumerate(values):
                 if i == 2:
                     # Green checkmark result
-                    self.c.setFillColor(COLOR_STATUS_GREEN)
-                    self.c.setFont('Helvetica-Bold', 9)
-                    self.c.drawString(cx + 6, self.y - row_h + 6, '\u2713 Tested')
-                    self.c.setFillColor(COLOR_TEXT)
-                    self.c.setFont('Helvetica', 9)
+                    self._draw_pill(cx + 6, self.y - row_h + 4, '\u2713 TESTED', COLOR_FIXED_HEADER, font_size=7)
                 else:
-                    self.c.drawString(cx + 6, self.y - row_h + 6, str(val))
+                    self.c.drawString(cx + 6, self.y - row_h + 7, str(val))
                 cx += col_w[i]
             self.y -= row_h
 
         # Bottom border
-        self.c.setStrokeColor(COLOR_SEPARATOR)
+        self.c.setStrokeColor(COLOR_PANEL_BORDER)
         self.c.setLineWidth(0.5)
         self.c.line(x, self.y, x + self.content_w, self.y)
         self.y -= 4
@@ -357,18 +527,19 @@ class PageWriter:
         ]
         headers = ['#', 'Type / Severity', 'Issue Area', 'Status']
         header_h = 22
-        row_min_h = 22
+        row_min_h = 38
         line_h = 11
-        top_pad = 6
-        bottom_pad = 5
+        top_pad = 8
+        bottom_pad = 8
         x = self.margin
+        row_gap = 6
 
         def draw_header():
             self.need(header_h + 4)
             self.c.setFillColor(COLOR_HEADER_BG)
-            self.c.rect(x, self.y - header_h, self.content_w, header_h, fill=1, stroke=0)
-            self.c.setFillColor(COLOR_WHITE)
-            self.c.setFont('Helvetica-Bold', 9)
+            self.c.roundRect(x, self.y - header_h, self.content_w, header_h, 7, fill=1, stroke=0)
+            self.c.setFillColor(COLOR_ACCENT_SOFT)
+            self.c.setFont('Helvetica-Bold', 8)
             cx = x
             for i, h in enumerate(headers):
                 self.c.drawString(cx + 6, self.y - header_h + 7, h)
@@ -384,49 +555,47 @@ class PageWriter:
             title = bug.get('title', '')
             area = bug.get('area', '')
             build = bug.get('fixed_build', '')
-            area_title = f'{area} \u2014 {title}' if area else title
-            area_lines = simpleSplit(area_title, 'Helvetica', 9, col_w[2] - 12) or ['']
-            status_text = ''
-            status_lines = ['']
+            area_lines = wrap_pdf_text((area or 'General').upper(), 'Helvetica-Bold', 6.6, col_w[2] - 12, max_lines=1)
+            title_lines = wrap_pdf_text(title or 'Untitled finding', 'Helvetica-Bold', 9.4, col_w[2] - 12, max_lines=2)
+
             if is_fixed:
                 status_text = '\u2713 FIXED'
                 if build:
                     status_text += f' {build}'
-                status_lines = simpleSplit(status_text, 'Helvetica-Bold', 9, col_w[3] - 12) or ['']
+            else:
+                status_text = 'Open'
 
-            content_lines = max(len(area_lines), len(status_lines))
-            row_h = max(row_min_h, top_pad + content_lines * line_h + bottom_pad)
+            content_lines = 1 + len(title_lines)
+            row_h = max(row_min_h, top_pad + 8 + content_lines * line_h + bottom_pad)
 
-            if self.y - row_h < self.margin + 40:
+            if self.y - (row_h + row_gap) < self.margin + 40:
                 self.new_page()
                 draw_header()
 
+            box_x = x + 2
+            box_w = self.content_w - 4
             if is_fixed:
                 self.c.setFillColor(COLOR_FIXED_BG)
             else:
-                self.c.setFillColor(COLOR_TABLE_ALT if idx % 2 == 0 else COLOR_WHITE)
-            self.c.rect(x, self.y - row_h, self.content_w, row_h, fill=1, stroke=0)
+                self.c.setFillColor(COLOR_TABLE_ALT if idx % 2 == 0 else COLOR_SURFACE_ALT)
+            self.c.roundRect(box_x, self.y - row_h, box_w, row_h, 8, fill=1, stroke=0)
+            accent_color = COLOR_FIXED_HEADER if is_fixed else get_severity_color('SUGGESTION' if btype == 'SUGGESTION' else severity)
+            self.c.setFillColor(accent_color)
+            self.c.roundRect(box_x, self.y - row_h, 5, row_h, 2.5, fill=1, stroke=0)
 
-            self.c.setStrokeColor(COLOR_SEPARATOR)
+            self.c.setStrokeColor(COLOR_PANEL_BORDER)
             self.c.setLineWidth(0.3)
-            self.c.line(x, self.y - row_h, x + self.content_w, self.y - row_h)
+            self.c.roundRect(box_x, self.y - row_h, box_w, row_h, 8, fill=0, stroke=1)
 
             cx = x
             text_y = self.y - top_pad
 
             # # column
-            self.c.setFillColor(COLOR_TEXT)
+            self.c.setFillColor(COLOR_TEXT_MUTED)
             self.c.setFont('Helvetica-Bold', 9)
             num_str = str(idx + 1)
-            num_baseline = text_y - line_h + 3
-            if is_fixed:
-                self.c.saveState()
-                self.c.setStrokeColor(COLOR_TEXT)
-                self.c.setLineWidth(0.5)
-                sw = self.c.stringWidth(num_str, 'Helvetica-Bold', 9)
-                self.c.line(cx + 6, num_baseline + 4, cx + 6 + sw, num_baseline + 4)
-                self.c.restoreState()
-            self.c.drawString(cx + 6, num_baseline, num_str)
+            num_y = self.y - row_h / 2 - 3
+            self.c.drawString(cx + 8, num_y, num_str)
             cx += col_w[0]
 
             # Type/Severity badge — same style as header bar: 9pt font, dynamic width
@@ -434,109 +603,80 @@ class PageWriter:
             badge_color = get_severity_color(badge_label if btype == 'SUGGESTION' else severity)
             dot = '\u25cf '
             label_text = f'{dot}{badge_label}' if btype != 'SUGGESTION' else 'SUGGESTION'
-            bh = 16
-            by = self.y - top_pad - 13
-            self.c.setFont('Helvetica-Bold', 9)
-            bw = self.c.stringWidth(label_text, 'Helvetica-Bold', 9) + 12
-            self.c.setFillColor(badge_color)
-            self.c.roundRect(cx + 4, by, bw, bh, 3, fill=1, stroke=0)
-            self.c.setFillColor(COLOR_WHITE)
-            self.c.drawString(cx + 4 + 6, by + 5, label_text)
+            by = self.y - row_h / 2 - 8
+            self._draw_pill(cx + 4, by, label_text, badge_color, font_size=8)
             cx += col_w[1]
 
             # Issue Area / Title
-            self.c.setFillColor(COLOR_TEXT)
-            self.c.setFont('Helvetica', 9)
+            self.c.setFillColor(COLOR_TEXT_MUTED)
+            self.c.setFont('Helvetica-Bold', 6.6)
             line_y = text_y
-            for line in area_lines:
-                baseline = line_y - line_h + 3
-                if is_fixed:
-                    self.c.saveState()
-                    self.c.setStrokeColor(COLOR_TEXT)
-                    self.c.setLineWidth(0.4)
-                    sw = self.c.stringWidth(line, 'Helvetica', 9)
-                    self.c.line(cx + 6, baseline + 4, cx + 6 + sw, baseline + 4)
-                    self.c.restoreState()
-                self.c.drawString(cx + 6, baseline, line)
+            self.c.drawString(cx + 6, line_y - 2, area_lines[0])
+            line_y -= 12
+            self.c.setFillColor(COLOR_TEXT)
+            self.c.setFont('Helvetica-Bold', 9.4)
+            for line in title_lines:
+                self.c.drawString(cx + 6, line_y - line_h + 4, line)
                 line_y -= line_h
             cx += col_w[2]
 
             # Status
-            if is_fixed:
-                self.c.setFillColor(COLOR_STATUS_GREEN)
-                self.c.setFont('Helvetica-Bold', 9)
-                line_y = text_y
-                for line in status_lines:
-                    self.c.drawString(cx + 6, line_y - line_h + 3, line)
-                    line_y -= line_h
+            status_color = COLOR_FIXED_HEADER if is_fixed else COLOR_HEADER_BG_SOFT
+            status_label = status_text.upper()
+            self._draw_pill(cx + 6, self.y - row_h / 2 - 8, status_label, status_color, font_size=7.5)
 
-            self.y -= row_h
+            self.y -= row_h + row_gap
 
-        self.c.setStrokeColor(COLOR_SEPARATOR)
+        self.c.setStrokeColor(COLOR_PANEL_BORDER)
         self.c.setLineWidth(0.5)
         self.c.line(x, self.y, x + self.content_w, self.y)
         self.y -= 4
 
     # ── Bug detail header bar ─────────────────────────────────────────────────
-    def draw_bug_header(self, num, btype, severity, title, is_fixed=False):
-        bar_h = 32
+    def draw_bug_header(self, num, btype, severity, title, area='', is_fixed=False):
+        layout = self._bug_header_layout(btype, severity, title, area, is_fixed)
+        bar_h = layout['height']
         x = self.margin
 
         bg = COLOR_FIXED_HEADER if is_fixed else COLOR_HEADER_BG
         self.c.setFillColor(bg)
-        self.c.rect(x, self.y - bar_h, self.content_w, bar_h, fill=1, stroke=0)
+        self.c.roundRect(x, self.y - bar_h, self.content_w, bar_h, 8, fill=1, stroke=0)
+        self.c.setFillColor(COLOR_ACCENT if not is_fixed else COLOR_ACCENT_SOFT)
+        self.c.roundRect(x, self.y - bar_h, 8, bar_h, 5, fill=1, stroke=0)
 
-        cur_x = x + 8
+        cur_x = x + 14
 
         # Left pill: "BUG #N" or "SUGGESTION #N"
-        is_suggestion = btype.upper() == 'SUGGESTION'
-        if is_suggestion:
-            num_label = f'SUGGESTION #{num}'
-            pill_color = COLOR_SUGGESTION
-        else:
-            num_label = f'BUG #{num}'
-            pill_color = colors.HexColor('#253a7a')
-
-        self.c.setFillColor(pill_color)
-        nw = self.c.stringWidth(num_label, 'Helvetica-Bold', 9) + 12
-        # Pill vertically centered in bar: (bar_h - pill_h) / 2 = (32 - 16) / 2 = 8
-        self.c.roundRect(cur_x, self.y - bar_h + 8, nw, 16, 3, fill=1, stroke=0)
-        self.c.setFillColor(COLOR_WHITE)
-        self.c.setFont('Helvetica-Bold', 9)
-        self.c.drawString(cur_x + 6, self.y - bar_h + 13, num_label)
+        is_suggestion = layout['is_suggestion']
+        num_label = f'{layout["num_label"]} #{num}'
+        pill_y = self.y - 18
+        nw = self._draw_pill(cur_x, pill_y, num_label, layout['pill_color'], font_size=8)
         cur_x += nw + 8
 
         # Severity badge (BUG only, not SUGGESTION)
-        if not is_suggestion and severity:
+        if layout['sev_label']:
             sev_color = get_severity_color(severity)
-            sev_label = f'\u25cf {severity.upper()}'
-            sw = self.c.stringWidth(sev_label, 'Helvetica-Bold', 9) + 12
-            self.c.setFillColor(sev_color)
-            self.c.roundRect(cur_x, self.y - bar_h + 8, sw, 16, 3, fill=1, stroke=0)
-            self.c.setFillColor(COLOR_WHITE)
-            self.c.setFont('Helvetica-Bold', 9)
-            self.c.drawString(cur_x + 6, self.y - bar_h + 13, sev_label)
+            sw = self._draw_pill(cur_x, pill_y, layout['sev_label'], sev_color, font_size=8)
             cur_x += sw + 10
 
         # Title
         self.c.setFillColor(COLOR_WHITE)
-        self.c.setFont('Helvetica-Bold', 10)
-        remaining_w = self.content_w - (cur_x - x) - 8
-        title_display = title
-        while self.c.stringWidth(title_display, 'Helvetica-Bold', 10) > remaining_w and len(title_display) > 3:
-            title_display = title_display[:-1]
-        if title_display != title:
-            title_display = title_display[:-1] + '\u2026'
-        self.c.drawString(cur_x, self.y - bar_h + 12, title_display)
+        self.c.setFont('Helvetica-Bold', 10.6)
+        title_y = self.y - 27
+        if len(layout['title_lines']) > 1:
+            title_y = self.y - 21
+        for line in layout['title_lines']:
+            self.c.drawString(layout['x'], title_y, line)
+            title_y -= 12
 
         # Fixed indicator overlay
         if is_fixed:
             self.c.setFillColor(COLOR_WHITE)
             self.c.setFont('Helvetica-Bold', 8)
             fixed_txt = '\u2713 FIXED'
-            self.c.drawRightString(x + self.content_w - 8, self.y - bar_h + 13, fixed_txt)
+            self.c.drawRightString(x + self.content_w - 10, self.y - 19, fixed_txt)
 
-        self.y -= bar_h + 4
+        self.y -= bar_h + 6
 
     # ── WHAT / WHERE / HOW block ──────────────────────────────────────────────
     def _wwh_text_metrics(self):
@@ -578,11 +718,13 @@ class PageWriter:
             self.need(bh)
 
             # Label background
-            self.c.setFillColor(COLOR_LABEL_BG)
-            self.c.rect(x, self.y - bh, label_w, bh, fill=1, stroke=0)
-            self.c.setStrokeColor(COLOR_SEPARATOR)
+            self.c.setFillColor(COLOR_WHITE)
+            self.c.roundRect(x, self.y - bh, self.content_w, bh, 6, fill=1, stroke=0)
+            self.c.setFillColor(WWH_LABEL_COLORS.get(label, COLOR_LABEL_BG))
+            self.c.roundRect(x, self.y - bh, label_w, bh, 6, fill=1, stroke=0)
+            self.c.setStrokeColor(COLOR_PANEL_BORDER)
             self.c.setLineWidth(0.3)
-            self.c.rect(x, self.y - bh, self.content_w, bh, fill=0, stroke=1)
+            self.c.roundRect(x, self.y - bh, self.content_w, bh, 6, fill=0, stroke=1)
 
             # Label text
             self.c.setFillColor(COLOR_TEXT)
@@ -613,43 +755,85 @@ class PageWriter:
             self.y -= 22
 
     # ── Narrative description ─────────────────────────────────────────────────
+    def _description_layout(self, text):
+        font_size = 8.5
+        line_h = 11.5
+        text_x = self.margin + 20
+        right_pad = 20
+        text_w = self.content_w - (text_x - self.margin) - right_pad
+        top_pad = 30
+        bottom_pad = 14
+        lines = simpleSplit(text, 'Helvetica', font_size, text_w)
+        return {
+            'font_size': font_size,
+            'line_h': line_h,
+            'text_x': text_x,
+            'text_w': text_w,
+            'top_pad': top_pad,
+            'bottom_pad': bottom_pad,
+            'lines': lines or [''],
+        }
+
     def draw_description(self, text):
         if not text or not text.strip():
             return
-        font_size = 9
-        line_h = 13
-        lines = simpleSplit(text, 'Helvetica', font_size, self.content_w)
-        if not lines:
-            return
-        total_h = len(lines) * line_h + 6
-        self.need(total_h)
-        self.y -= 13
-        self.c.setFillColor(COLOR_TEXT)
+        layout = self._description_layout(text)
+        font_size = layout['font_size']
+        line_h = layout['line_h']
+        lines = layout['lines']
+        top_pad = layout['top_pad']
+        bottom_pad = layout['bottom_pad']
+        text_x = layout['text_x']
+        box_h = len(lines) * line_h + top_pad + bottom_pad
+        self.need(box_h + 4)
+        self.y -= 8
+        box_top = self.y
+        box_y = box_top - box_h
+        self.c.setFillColor(COLOR_SURFACE)
+        self.c.roundRect(self.margin, box_y, self.content_w, box_h, 7, fill=1, stroke=0)
+        self.c.setFillColor(COLOR_ACCENT_SOFT)
+        self.c.roundRect(self.margin + 14, box_top - 18, 82, 13, 6, fill=1, stroke=0)
+        self.c.setFillColor(COLOR_HEADER_BG)
+        self.c.setFont('Helvetica-Bold', 6.8)
+        self.c.drawString(self.margin + 22, box_top - 14, 'DESCRIPTION')
+        self.c.setFillColor(COLOR_ACCENT)
+        self.c.roundRect(self.margin + 8, box_y + 10, 3, box_h - 20, 1.5, fill=1, stroke=0)
+        self.c.setFillColor(COLOR_NARRATIVE)
         self.c.setFont('Helvetica', font_size)
+        text_y = box_top - top_pad + 2
         for line in lines:
-            self.need(line_h)
-            self.c.drawString(self.margin, self.y, line)
-            self.y -= line_h
-        self.y -= 2
+            self.c.drawString(text_x, text_y, line)
+            text_y -= line_h
+        self.y = box_y - 6
 
     # ── Fixed verified note ───────────────────────────────────────────────────
     def draw_fixed_note(self, build_str):
         if not build_str:
             return
-        self.need(16)
+        self.need(20)
         self.y -= 2
         note = f'\u2713 Verified fixed in build {build_str}'
-        self.c.setFont('Helvetica-Oblique', 9)
-        self.c.setFillColor(COLOR_STATUS_GREEN)
-        self.c.drawString(self.margin, self.y, note)
-        self.y -= 8
+        self._draw_pill(self.margin, self.y - 10, note, COLOR_FIXED_HEADER, font_size=8, pad_x=8, height=18)
+        self.y -= 14
 
     # ── Screenshots ───────────────────────────────────────────────────────────
     def draw_screenshots(self, image_paths, reserve_after=0):
         if not image_paths:
             return
 
+        self.need(26)
         self.y -= 2
+        self.c.setFillColor(COLOR_TEXT_MUTED)
+        self.c.setFont('Helvetica-Bold', 7)
+        self.c.drawString(self.margin, self.y, 'VISUAL EVIDENCE')
+        meta = f'{len(image_paths)} screenshot' + ('s' if len(image_paths) != 1 else '')
+        self.c.setFillColor(COLOR_NARRATIVE)
+        self.c.setFont('Helvetica', 8)
+        self.c.drawString(self.margin + 88, self.y, meta)
+        self.c.setStrokeColor(COLOR_SEPARATOR)
+        self.c.setLineWidth(0.6)
+        self.c.line(self.margin, self.y - 6, self.margin + self.content_w, self.y - 6)
+        self.y -= 14
 
         def _is_portrait(path):
             try:
@@ -743,24 +927,28 @@ class PageWriter:
                 iw, ih = img.size
             max_w = 240 if ih > iw else 400
             dw, dh = self._img_dims(iw, ih, max_w)
+            frame_total_h = dh + self.IMAGE_CARD_PAD * 2
             min_h = self.MIN_TRAILING_IMAGE_HEIGHT if reserve_after else self.MIN_INLINE_IMAGE_HEIGHT
             target_h = self._target_block_height(
-                dh,
-                min_h,
+                frame_total_h,
+                min_h + self.IMAGE_CARD_PAD * 2,
                 reserve_after=reserve_after,
             )
 
             # If the image nearly fits, scale it to the remaining space instead of
             # forcing a page break that would leave the previous page visibly empty.
             if target_h is None:
-                self.need(dh + 12)
-            elif target_h < dh:
-                dw, dh = self._scale_dims_to_height(dw, dh, target_h)
+                self.need(frame_total_h + 12)
+            elif target_h < frame_total_h:
+                image_target_h = max(target_h - self.IMAGE_CARD_PAD * 2, 1)
+                dw, dh = self._scale_dims_to_height(dw, dh, image_target_h)
+                frame_total_h = dh + self.IMAGE_CARD_PAD * 2
 
             tmp = self._prepare_image(path)
             cx = self.margin + (self.content_w - dw) / 2
+            self._draw_image_frame(cx, self.y - dh, dw, dh)
             self.c.drawImage(tmp, cx, self.y - dh, width=dw, height=dh)
-            self.y -= dh + 4
+            self.y -= frame_total_h + 8
             try:
                 os.remove(tmp)
             except Exception:
@@ -779,31 +967,35 @@ class PageWriter:
             dw1, dh1 = self._img_dims(iw1, ih1, MAX_W)
             dw2, dh2 = self._img_dims(iw2, ih2, MAX_W)
             display_h = max(dh1, dh2)
+            frame_total_h = display_h + self.IMAGE_CARD_PAD * 2
             min_h = self.MIN_TRAILING_PAIR_HEIGHT if reserve_after else self.MIN_INLINE_PAIR_HEIGHT
             target_h = self._target_block_height(
-                display_h,
-                min_h,
+                frame_total_h,
+                min_h + self.IMAGE_CARD_PAD * 2,
                 reserve_after=reserve_after,
             )
 
             if target_h is None:
-                self.need(display_h + 12)
-            elif target_h < display_h:
-                scale = target_h / display_h
+                self.need(frame_total_h + 12)
+            elif target_h < frame_total_h:
+                image_target_h = max(target_h - self.IMAGE_CARD_PAD * 2, 1)
+                scale = image_target_h / display_h
                 dw1 *= scale
                 dh1 *= scale
                 dw2 *= scale
                 dh2 *= scale
-                display_h = target_h
+                display_h = image_target_h
+                frame_total_h = display_h + self.IMAGE_CARD_PAD * 2
 
             tmp1 = self._prepare_image(path1)
             tmp2 = self._prepare_image(path2)
             total_w = dw1 + GAP + dw2
             x1 = self.margin + (self.content_w - total_w) / 2
             x2 = x1 + dw1 + GAP
+            self._draw_image_frame(x1, self.y - display_h, total_w, display_h)
             self.c.drawImage(tmp1, x1, self.y - dh1, width=dw1, height=dh1)
             self.c.drawImage(tmp2, x2, self.y - dh2, width=dw2, height=dh2)
-            self.y -= display_h + 4
+            self.y -= frame_total_h + 8
             for tmp in (tmp1, tmp2):
                 try:
                     os.remove(tmp)
@@ -826,21 +1018,46 @@ class PageWriter:
         if not text or not text.strip():
             return
 
-        # Always begin on a fresh page — prevents heading being orphaned from content
-        self.new_page()
-        self.draw_section_title('Overall Assessment', top_pad=8, bot_pad=10)
+        text = clean_text(text)
+        font_size = 9.5
+        line_h = 14
+        card_text_w = self.content_w - 36
+        lines = simpleSplit(text, 'Helvetica', font_size, card_text_w) or ['']
+        first_page = True
 
-        font_size = 10
-        line_h = 15
-        if text and text.strip():
-            text = clean_text(text)
-            lines = simpleSplit(text, 'Helvetica', font_size, self.content_w)
-            self.c.setFillColor(COLOR_TEXT)
+        while lines:
+            self.new_page()
+            self.draw_section_title('Overall Assessment', top_pad=8, bot_pad=16 if first_page else 12)
+
+            card_top_pad = 34
+            card_bottom_pad = 18
+            available_h = self.y - (self.margin + 44)
+            lines_fit = max(1, int((available_h - card_top_pad - card_bottom_pad) / line_h))
+            chunk = lines[:lines_fit]
+            lines = lines[lines_fit:]
+            card_h = card_top_pad + card_bottom_pad + len(chunk) * line_h
+            self.need(card_h + 4)
+
+            card_top = self.y
+            card_y = card_top - card_h
+            self.c.setFillColor(COLOR_SURFACE_ALT)
+            self.c.roundRect(self.margin, card_y, self.content_w, card_h, 10, fill=1, stroke=0)
+            self.c.setFillColor(COLOR_ACCENT_SOFT)
+            self.c.roundRect(self.margin + 14, card_top - 22, 90, 14, 7, fill=1, stroke=0)
+            self.c.setFillColor(COLOR_HEADER_BG)
+            self.c.setFont('Helvetica-Bold', 7)
+            self.c.drawString(self.margin + 23, card_top - 17, 'RELEASE READINESS')
+            self.c.setFillColor(COLOR_ACCENT)
+            self.c.roundRect(self.margin + 14, card_y + 14, 4, card_h - 28, 2, fill=1, stroke=0)
+            self.c.setFillColor(COLOR_NARRATIVE)
             self.c.setFont('Helvetica', font_size)
-            for line in lines:
-                self.need(line_h)
-                self.c.drawString(self.margin, self.y, line)
-                self.y -= line_h
+            text_y = card_top - card_top_pad
+            for line in chunk:
+                self.c.drawString(self.margin + 28, text_y, line)
+                text_y -= line_h
+
+            self.y = card_y - 8
+            first_page = False
 
 
 # ─── PDF Builder ──────────────────────────────────────────────────────────────
@@ -851,19 +1068,20 @@ def build_pdf(data, uploaded_files, output_path):
     app_name = data.get('app_name', 'App')
     app_desc = data.get('app_desc', '')
     device = data.get('device', '')
+    report_date_label = data.get('report_date_label', datetime.now().strftime('%d.%m.%Y'))
     coverage_rows = data.get('coverage_rows', [])
     bugs = data.get('bugs', [])
     sorted_bug_entries = sort_bug_entries_for_pdf(bugs, uploaded_files)
     assessment = data.get('assessment', '')
 
     # ── Page 1: Cover ────────────────────────────────────────────────────────
-    pw.draw_cover_header(app_name, app_desc, device)
+    pw.draw_cover_header(app_name, app_desc, device, report_date_label)
 
     pw.draw_section_title('Test Coverage', top_pad=18, bot_pad=6)
     pw.draw_test_coverage_table(coverage_rows)
 
     if sorted_bug_entries:
-        pw.draw_section_title('Bug Summary', top_pad=14, bot_pad=6)
+        pw.draw_section_title('Bug Summary', top_pad=27, bot_pad=6)
         pw.draw_bug_summary_table([entry['bug'] for entry in sorted_bug_entries])
 
     # ── Pages 2+: Bug Details ─────────────────────────────────────────────────
@@ -897,7 +1115,7 @@ def build_pdf(data, uploaded_files, output_path):
             else:
                 pw.draw_separator()
 
-        pw.draw_bug_header(idx + 1, btype, severity, title, is_fixed=is_fixed)
+        pw.draw_bug_header(idx + 1, btype, severity, title, area=area, is_fixed=is_fixed)
 
         # WHAT / WHERE / HOW
         pw.draw_what_where_how(what, where, how, is_fixed=is_fixed, build_str=build_str)
@@ -936,6 +1154,10 @@ def generate():
     app_name = re.sub(r'^QA\s+Test\s+Report\s*[\u2014\-]\s*', '', app_name).strip() or 'App'
     app_desc = request.form.get('app_desc', '').strip()
     device = request.form.get('device', '').strip()
+    report_date_mode = request.form.get('report_date_mode', 'single').strip()
+    report_date = request.form.get('report_date', '').strip()
+    report_start_date = request.form.get('report_start_date', '').strip()
+    report_end_date = request.form.get('report_end_date', '').strip()
     assessment = clean_text(request.form.get('assessment', ''))
 
     # Coverage rows
@@ -961,6 +1183,13 @@ def generate():
     json_path = None
 
     try:
+        report_date_context = build_report_date_context(
+            report_date_mode,
+            report_date,
+            report_start_date,
+            report_end_date,
+        )
+
         for i in range(bug_count):
             btype = request.form.get(f'bug_type_{i}', 'BUG')
             severity = request.form.get(f'bug_severity_{i}', '')
@@ -1005,6 +1234,7 @@ def generate():
             'app_name': app_name,
             'app_desc': app_desc,
             'device': device,
+            'report_date_label': report_date_context['label'],
             'coverage_rows': coverage_rows,
             'bugs': bugs,
             'assessment': assessment,
@@ -1023,6 +1253,10 @@ def generate():
             'app_name': app_name,
             'app_desc': app_desc,
             'device': device,
+            'report_date_mode': report_date_context['mode'],
+            'report_date': report_date_context['date'],
+            'report_start_date': report_date_context['start_date'],
+            'report_end_date': report_date_context['end_date'],
             'assessment': assessment,
             'coverage': coverage_rows,
             'bugs': [

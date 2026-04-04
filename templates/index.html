@@ -46,6 +46,29 @@
             <label for="device">Device</label>
             <input type="text" id="device" name="device" placeholder="e.g. iPhone 16 Pro Max · iOS 26.3.1" />
           </div>
+          <div class="form-grid-2 date-config-row">
+            <div class="form-group">
+              <label for="report_date_mode">Report Period</label>
+              <select id="report_date_mode" name="report_date_mode" onchange="handleDateModeChange()">
+                <option value="single">Single Day</option>
+                <option value="range">Date Range</option>
+              </select>
+            </div>
+            <div class="form-group" id="singleDateGroup">
+              <label for="report_date">Report Date</label>
+              <input type="date" id="report_date" name="report_date" />
+            </div>
+          </div>
+          <div id="dateRangeGroup" class="form-grid-2 date-range-row" style="display:none">
+            <div class="form-group">
+              <label for="report_start_date">Start Date</label>
+              <input type="date" id="report_start_date" name="report_start_date" />
+            </div>
+            <div class="form-group">
+              <label for="report_end_date">End Date</label>
+              <input type="date" id="report_end_date" name="report_end_date" />
+            </div>
+          </div>
         </div>
       </section>
 
@@ -166,9 +189,49 @@
 
   // ── Init ────────────────────────────────────────────────────────────────
   window.addEventListener('DOMContentLoaded', () => {
+    initializeReportDates();
     DEFAULT_COVERAGE.forEach(r => addCoverageRow(r.area, r.scope));
     updateSummary();
   });
+
+  function getTodayIsoDate() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function initializeReportDates() {
+    const today = getTodayIsoDate();
+    if (!document.getElementById('report_date').value) {
+      document.getElementById('report_date').value = today;
+    }
+    if (!document.getElementById('report_start_date').value) {
+      document.getElementById('report_start_date').value = today;
+    }
+    if (!document.getElementById('report_end_date').value) {
+      document.getElementById('report_end_date').value = today;
+    }
+    handleDateModeChange();
+  }
+
+  function handleDateModeChange() {
+    const mode = document.getElementById('report_date_mode').value;
+    const singleGroup = document.getElementById('singleDateGroup');
+    const rangeGroup = document.getElementById('dateRangeGroup');
+    const singleInput = document.getElementById('report_date');
+    const startInput = document.getElementById('report_start_date');
+    const endInput = document.getElementById('report_end_date');
+
+    const isRange = mode === 'range';
+    singleGroup.style.display = isRange ? 'none' : 'flex';
+    rangeGroup.style.display = isRange ? 'grid' : 'none';
+
+    singleInput.disabled = isRange;
+    startInput.disabled = !isRange;
+    endInput.disabled = !isRange;
+  }
 
   // ── Coverage Rows ────────────────────────────────────────────────────────
   function addCoverageRow(area = '', scope = '') {
@@ -551,6 +614,11 @@
         document.getElementById('app_name').value = d.app_name || '';
         document.getElementById('app_desc').value = d.app_desc || '';
         document.getElementById('device').value = d.device || '';
+        document.getElementById('report_date_mode').value = d.report_date_mode || 'single';
+        document.getElementById('report_date').value = d.report_date || getTodayIsoDate();
+        document.getElementById('report_start_date').value = d.report_start_date || d.report_date || getTodayIsoDate();
+        document.getElementById('report_end_date').value = d.report_end_date || d.report_date || getTodayIsoDate();
+        handleDateModeChange();
         document.getElementById('assessment').value = d.assessment || '';
 
         // Coverage
