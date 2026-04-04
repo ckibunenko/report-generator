@@ -68,6 +68,23 @@ class ReportGeneratorTests(unittest.TestCase):
         image.save(buf, format='PNG')
         return buf.getvalue()
 
+    @staticmethod
+    def bmp_upload(filename='image.bmp'):
+        image = Image.new('RGB', (48, 48), color=(0, 180, 120))
+        buf = io.BytesIO()
+        image.save(buf, format='BMP')
+        buf.seek(0)
+        return buf, filename
+
+    @staticmethod
+    def exif_oriented_jpeg_bytes(size=(120, 240), orientation=6):
+        image = Image.new('RGB', size, color=(240, 240, 240))
+        exif = Image.Exif()
+        exif[274] = orientation
+        buf = io.BytesIO()
+        image.save(buf, format='JPEG', exif=exif)
+        return buf.getvalue()
+
     def test_generate_sanitizes_app_name_for_output_files(self):
         response = self.client.post('/generate', data={'app_name': 'A/B', 'bug_count': '0'})
 
@@ -179,6 +196,76 @@ class ReportGeneratorTests(unittest.TestCase):
 
         self.assertEqual(optimized_ext, '.png')
         self.assertEqual(optimized_bytes, original_bytes)
+
+    def test_optimize_uploaded_image_converts_decodable_unsupported_formats(self):
+        original_buf, filename = self.bmp_upload('IMG_7316.jpeg')
+        file_storage = FileStorage(stream=io.BytesIO(original_buf.getvalue()), filename=filename)
+
+        original_ext = validate_image_upload(file_storage)
+        optimized_bytes, optimized_ext = optimize_uploaded_image(file_storage, original_ext)
+
+        self.assertEqual(original_ext, '.webp')
+        self.assertEqual(optimized_ext, '.webp')
+        with Image.open(io.BytesIO(optimized_bytes)) as optimized_img:
+            self.assertEqual(optimized_img.format, 'WEBP')
+
+    def test_optimize_uploaded_image_applies_exif_orientation_when_reencoding(self):
+        original_bytes = self.exif_oriented_jpeg_bytes()
+        file_storage = FileStorage(stream=io.BytesIO(original_bytes), filename='rotated.jpg')
+        original_keep_limit = flask_app.config['SCREENSHOT_KEEP_ORIGINAL_MAX_BYTES']
+        flask_app.config['SCREENSHOT_KEEP_ORIGINAL_MAX_BYTES'] = 0
+
+        try:
+            original_ext = validate_image_upload(file_storage)
+            optimized_bytes, optimized_ext = optimize_uploaded_image(file_storage, original_ext)
+        finally:
+            flask_app.config['SCREENSHOT_KEEP_ORIGINAL_MAX_BYTES'] = original_keep_limit
+
+        self.assertEqual(optimized_ext, '.webp')
+        with Image.open(io.BytesIO(optimized_bytes)) as optimized_img:
+            self.assertEqual(optimized_img.size, (240, 120))
+
+    def test_prepare_image_applies_exif_orientation_for_pdf_rendering(self):
+        original_bytes = self.exif_oriented_jpeg_bytes()
+        src_path = os.path.join(self.upload_dir, 'rotated.jpg')
+        with open(src_path, 'wb') as fh:
+            fh.write(original_bytes)
+
+        pdf = canvas.Canvas(io.BytesIO())
+        writer = PageWriter(pdf, PAGE_W, PAGE_H, MARGIN)
+        prepared_path = writer._prepare_image(src_path)
+        try:
+            with Image.open(prepared_path) as prepared_img:
+                self.assertEqual(prepared_img.size, (240, 120))
+        finally:
+            if os.path.exists(prepared_path):
+                os.remove(prepared_path)
+
+    def test_generate_accepts_decodable_nonstandard_image_formats(self):
+        bmp_buf, _ = self.bmp_upload('IMG_7316.jpeg')
+
+        response = self.client.post(
+            '/generate',
+            data={
+                'app_name': 'Nonstandard Upload',
+                'bug_count': '1',
+                'bug_type_0': 'SUGGESTION',
+                'bug_severity_0': 'MEDIUM',
+                'bug_title_0': 'Converted screenshot',
+                'bug_area_0': 'Upload',
+                'bug_what_0': 'Nonstandard image container',
+                'bug_where_0': 'Form',
+                'bug_how_0': 'Upload a decodable image',
+                'bug_description_0': 'Should be normalized instead of rejected',
+                'bug_fixed_0': 'false',
+                'bug_screenshots_0': (bmp_buf, 'IMG_7316.jpeg'),
+            },
+            content_type='multipart/form-data',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(os.path.exists(os.path.join(self.output_dir, payload['pdf_name'])))
 
     def test_generate_cleans_stale_reports(self):
         stale_pdf = os.path.join(self.output_dir, 'QA_Report_old.pdf')

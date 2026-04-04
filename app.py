@@ -10,7 +10,7 @@ from reportlab.lib import colors
 from reportlab.lib.utils import simpleSplit
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
-from PIL import Image
+from PIL import Image, ImageOps
 import io
 
 app = Flask(__name__)
@@ -149,12 +149,7 @@ def validate_image_upload(file_storage):
     finally:
         file_storage.stream.seek(0)
 
-    if image_format not in ALLOWED_IMAGE_FORMATS:
-        raise ValueError(
-            f'"{filename}" uses an unsupported format. Please upload PNG, JPG, or WEBP screenshots.'
-        )
-
-    return ALLOWED_IMAGE_FORMATS[image_format]
+    return ALLOWED_IMAGE_FORMATS.get(image_format, '.webp')
 
 
 def _flatten_image_to_rgb(img):
@@ -175,6 +170,10 @@ def _flatten_image_to_rgb(img):
         return img.convert('RGB')
 
     return img.copy()
+
+
+def _normalize_image_orientation(img):
+    return ImageOps.exif_transpose(img)
 
 
 def _encode_image_bytes(img, image_format, **save_kwargs):
@@ -198,16 +197,21 @@ def optimize_uploaded_image(file_storage, original_ext):
     original_bytes = file_storage.stream.read()
     file_storage.stream.seek(0)
 
-    if len(original_bytes) <= app.config['SCREENSHOT_KEEP_ORIGINAL_MAX_BYTES']:
-        return original_bytes, original_ext
-
     target_max = app.config['SCREENSHOT_TARGET_MAX_BYTES']
     best_bytes = original_bytes
     best_ext = original_ext
 
     with Image.open(io.BytesIO(original_bytes)) as source_img:
+        source_format = (source_img.format or '').upper()
+        source_img = _normalize_image_orientation(source_img)
         source_img.load()
         base_img = _flatten_image_to_rgb(source_img)
+
+    if (
+        source_format in ALLOWED_IMAGE_FORMATS
+        and len(original_bytes) <= app.config['SCREENSHOT_KEEP_ORIGINAL_MAX_BYTES']
+    ):
+        return original_bytes, original_ext
 
     def consider_candidate(img, quality):
         nonlocal best_bytes, best_ext
@@ -932,6 +936,7 @@ class PageWriter:
         def _is_portrait(path):
             try:
                 with Image.open(path) as img:
+                    img = _normalize_image_orientation(img)
                     iw, ih = img.size
                 return ih > iw
             except Exception:
@@ -989,6 +994,7 @@ class PageWriter:
     def _prepare_image(self, path, crop_aspect=None):
         """Convert image to RGB JPEG. crop_aspect=(w/h) crops to that ratio if given."""
         with Image.open(path) as img:
+            img = _normalize_image_orientation(img)
             if img.mode in ('RGBA', 'LA', 'P'):
                 bg = Image.new('RGB', img.size, (255, 255, 255))
                 if img.mode == 'P':
@@ -1018,6 +1024,7 @@ class PageWriter:
     def _draw_one_image(self, path, reserve_after=0):
         try:
             with Image.open(path) as img:
+                img = _normalize_image_orientation(img)
                 iw, ih = img.size
             max_w = 240 if ih > iw else 400
             dw, dh = self._img_dims(iw, ih, max_w)
@@ -1055,8 +1062,10 @@ class PageWriter:
         GAP = 10
         try:
             with Image.open(path1) as img:
+                img = _normalize_image_orientation(img)
                 iw1, ih1 = img.size
             with Image.open(path2) as img:
+                img = _normalize_image_orientation(img)
                 iw2, ih2 = img.size
             dw1, dh1 = self._img_dims(iw1, ih1, MAX_W)
             dw2, dh2 = self._img_dims(iw2, ih2, MAX_W)
