@@ -177,6 +177,17 @@
   let bugs = [];
   let bugIdCounter = 0;
   let screenshotIdCounter = 0;
+  const ISSUE_TYPE_OPTIONS = {{ issue_type_options | tojson }};
+  const ISSUE_TYPE_MAP = Object.fromEntries(ISSUE_TYPE_OPTIONS.map(option => [option.value, option]));
+  const DEFAULT_ISSUE_TYPE = {{ default_issue_type | tojson }};
+  const DEFAULT_SEVERITY = {{ default_severity | tojson }};
+  const SEVERITY_OPTIONS = {{ severity_options | tojson }};
+  const DRAFT_STORAGE_KEY = 'qa-report-generator-draft-v1';
+  const DRAFT_DB_NAME = 'qa-report-generator-drafts';
+  const DRAFT_STORE_NAME = 'drafts';
+  let draftDbPromise = null;
+  let draftSaveTimer = null;
+  let isRestoringDraft = false;
 
   const DEFAULT_COVERAGE = [
     { area: 'Onboarding flow',    scope: 'First launch, account creation, onboarding screens' },
@@ -188,9 +199,14 @@
   ];
 
   // ── Init ────────────────────────────────────────────────────────────────
-  window.addEventListener('DOMContentLoaded', () => {
-    initializeReportDates();
-    DEFAULT_COVERAGE.forEach(r => addCoverageRow(r.area, r.scope));
+  window.addEventListener('DOMContentLoaded', async () => {
+    bindDraftPersistence();
+    const restored = await restoreDraft();
+    if (!restored) {
+      initializeReportDates();
+      DEFAULT_COVERAGE.forEach(r => addCoverageRow(r.area, r.scope));
+      handleDateModeChange();
+    }
     updateSummary();
   });
 
@@ -233,6 +249,301 @@
     endInput.disabled = !isRange;
   }
 
+  function normalizeIssueType(value) {
+    const normalized = String(value || DEFAULT_ISSUE_TYPE).trim().toUpperCase();
+    return ISSUE_TYPE_MAP[normalized] ? normalized : DEFAULT_ISSUE_TYPE;
+  }
+
+  function normalizeSeverity(value) {
+    const normalized = String(value || DEFAULT_SEVERITY).trim().toUpperCase();
+    return SEVERITY_OPTIONS.includes(normalized) ? normalized : DEFAULT_SEVERITY;
+  }
+
+  function getIssueTypeOption(value) {
+    return ISSUE_TYPE_MAP[normalizeIssueType(value)];
+  }
+
+  function issueTypeUsesSeverity(value) {
+    return getIssueTypeOption(value).uses_severity;
+  }
+
+  function renderIssueTypeOptions(selectedType) {
+    const normalized = normalizeIssueType(selectedType);
+    return ISSUE_TYPE_OPTIONS.map(option => `
+      <option value="${option.value}" ${option.value === normalized ? 'selected' : ''}>${option.label}</option>
+    `).join('');
+  }
+
+  function renderSeverityOptions(selectedSeverity) {
+    const normalized = normalizeSeverity(selectedSeverity);
+    return SEVERITY_OPTIONS.map(option => `
+      <option value="${option}" ${option === normalized ? 'selected' : ''}>${option}</option>
+    `).join('');
+  }
+
+  function bindDraftPersistence() {
+    const form = document.getElementById('reportForm');
+    form.addEventListener('input', scheduleDraftSave);
+    form.addEventListener('change', scheduleDraftSave);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && !isRestoringDraft) {
+        void saveDraftNow();
+      }
+    });
+  }
+
+  function scheduleDraftSave() {
+    if (isRestoringDraft) return;
+    window.clearTimeout(draftSaveTimer);
+    draftSaveTimer = window.setTimeout(() => {
+      void saveDraftNow();
+    }, 250);
+  }
+
+  function inferMimeTypeFromDataUrl(dataUrl) {
+    const match = String(dataUrl || '').match(/^data:([^;]+)[;,]/);
+    return match ? match[1] : 'image/png';
+  }
+
+  function dataUrlToFile(dataUrl, fileName, mimeType, lastModified) {
+    if (!dataUrl) return null;
+
+    const parts = String(dataUrl).split(',', 2);
+    if (parts.length !== 2) return null;
+
+    const header = parts[0];
+    const payload = parts[1];
+    const resolvedType = mimeType || inferMimeTypeFromDataUrl(dataUrl);
+
+    if (header.includes(';base64')) {
+      const binary = atob(payload);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return new File([bytes], fileName, { type: resolvedType, lastModified });
+    }
+
+    return new File([decodeURIComponent(payload)], fileName, {
+      type: resolvedType,
+      lastModified,
+    });
+  }
+
+  function collectCoverageRows() {
+    return Array.from(document.querySelectorAll('#coverageRows .coverage-row')).map(row => {
+      const [areaInput, scopeInput] = row.querySelectorAll('input');
+      return {
+        area: areaInput ? areaInput.value : '',
+        scope: scopeInput ? scopeInput.value : '',
+      };
+    });
+  }
+
+  function serializeScreenshots(screenshots) {
+    return (screenshots || []).map(screenshot => ({
+      id: screenshot.id,
+      name: screenshot.file?.name || screenshot.name || `screenshot-${screenshot.id}.png`,
+      type: screenshot.file?.type || screenshot.type || inferMimeTypeFromDataUrl(screenshot.dataUrl),
+      lastModified: screenshot.file?.lastModified || screenshot.lastModified || Date.now(),
+      dataUrl: screenshot.dataUrl,
+    }));
+  }
+
+  function buildDraftPayload() {
+    return {
+      app_name: document.getElementById('app_name').value,
+      app_desc: document.getElementById('app_desc').value,
+      device: document.getElementById('device').value,
+      report_date_mode: document.getElementById('report_date_mode').value,
+      report_date: document.getElementById('report_date').value,
+      report_start_date: document.getElementById('report_start_date').value,
+      report_end_date: document.getElementById('report_end_date').value,
+      assessment: document.getElementById('assessment').value,
+      coverage: collectCoverageRows(),
+      bugs: bugs.map(bug => ({
+        id: bug.id,
+        type: normalizeIssueType(bug.type),
+        severity: normalizeSeverity(bug.severity),
+        title: bug.title || '',
+        area: bug.area || '',
+        what: bug.what || '',
+        where: bug.where || '',
+        how: bug.how || '',
+        description: bug.description || '',
+        fixed: Boolean(bug.fixed),
+        fixed_build: bug.fixed_build || '',
+        screenshots: serializeScreenshots(bug.screenshots),
+      })),
+      bug_id_counter: bugIdCounter,
+      screenshot_id_counter: screenshotIdCounter,
+      saved_at: new Date().toISOString(),
+    };
+  }
+
+  function openDraftDb() {
+    if (!('indexedDB' in window)) {
+      return Promise.resolve(null);
+    }
+
+    if (!draftDbPromise) {
+      draftDbPromise = new Promise(resolve => {
+        const request = window.indexedDB.open(DRAFT_DB_NAME, 1);
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          if (!db.objectStoreNames.contains(DRAFT_STORE_NAME)) {
+            db.createObjectStore(DRAFT_STORE_NAME);
+          }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => resolve(null);
+      });
+    }
+
+    return draftDbPromise;
+  }
+
+  async function writeDraftToIndexedDb(draft) {
+    const db = await openDraftDb();
+    if (!db) return false;
+
+    return new Promise(resolve => {
+      const tx = db.transaction(DRAFT_STORE_NAME, 'readwrite');
+      tx.objectStore(DRAFT_STORE_NAME).put(draft, DRAFT_STORAGE_KEY);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+      tx.onabort = () => resolve(false);
+    });
+  }
+
+  async function readDraftFromIndexedDb() {
+    const db = await openDraftDb();
+    if (!db) return null;
+
+    return new Promise(resolve => {
+      const tx = db.transaction(DRAFT_STORE_NAME, 'readonly');
+      const request = tx.objectStore(DRAFT_STORE_NAME).get(DRAFT_STORAGE_KEY);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => resolve(null);
+    });
+  }
+
+  async function saveDraftNow() {
+    const draft = buildDraftPayload();
+    const savedToIndexedDb = await writeDraftToIndexedDb(draft);
+
+    if (savedToIndexedDb) {
+      try {
+        window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+      } catch (_error) {
+        // Ignore storage cleanup failures.
+      }
+      return true;
+    }
+
+    try {
+      window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+      return true;
+    } catch (error) {
+      console.warn('Failed to persist report draft', error);
+      return false;
+    }
+  }
+
+  async function restoreDraft() {
+    let draft = await readDraftFromIndexedDb();
+
+    if (!draft) {
+      try {
+        const rawDraft = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+        draft = rawDraft ? JSON.parse(rawDraft) : null;
+      } catch (_error) {
+        draft = null;
+      }
+    }
+
+    if (!draft) return false;
+
+    isRestoringDraft = true;
+    try {
+      document.getElementById('app_name').value = draft.app_name || '';
+      document.getElementById('app_desc').value = draft.app_desc || '';
+      document.getElementById('device').value = draft.device || '';
+      document.getElementById('report_date_mode').value = draft.report_date_mode || 'single';
+      document.getElementById('report_date').value = draft.report_date || getTodayIsoDate();
+      document.getElementById('report_start_date').value = draft.report_start_date || draft.report_date || getTodayIsoDate();
+      document.getElementById('report_end_date').value = draft.report_end_date || draft.report_date || getTodayIsoDate();
+      document.getElementById('assessment').value = draft.assessment || '';
+
+      const coverageRows = document.getElementById('coverageRows');
+      coverageRows.innerHTML = '';
+      (Array.isArray(draft.coverage) ? draft.coverage : []).forEach(row => {
+        addCoverageRow(row.area || '', row.scope || '');
+      });
+
+      bugs = [];
+      bugIdCounter = 0;
+      screenshotIdCounter = 0;
+
+      (Array.isArray(draft.bugs) ? draft.bugs : []).forEach((bug, idx) => {
+        const bugId = Number.isInteger(bug.id) ? bug.id : idx;
+        const screenshots = (Array.isArray(bug.screenshots) ? bug.screenshots : []).map(screenshot => {
+          const fileName = screenshot.name || `screenshot-${screenshot.id}.png`;
+          const fileType = screenshot.type || inferMimeTypeFromDataUrl(screenshot.dataUrl);
+          const lastModified = screenshot.lastModified || Date.now();
+
+          return {
+            id: Number.isInteger(screenshot.id) ? screenshot.id : screenshotIdCounter,
+            name: fileName,
+            type: fileType,
+            lastModified,
+            dataUrl: screenshot.dataUrl,
+            file: dataUrlToFile(screenshot.dataUrl, fileName, fileType, lastModified),
+          };
+        }).filter(screenshot => screenshot.dataUrl && screenshot.file);
+
+        screenshots.forEach(screenshot => {
+          screenshotIdCounter = Math.max(screenshotIdCounter, screenshot.id + 1);
+        });
+
+        bugs.push({
+          id: bugId,
+          index: idx,
+          type: normalizeIssueType(bug.type),
+          severity: normalizeSeverity(bug.severity),
+          title: bug.title || '',
+          area: bug.area || '',
+          what: bug.what || '',
+          where: bug.where || '',
+          how: bug.how || '',
+          description: bug.description || '',
+          fixed: Boolean(bug.fixed),
+          fixed_build: bug.fixed_build || '',
+          screenshots,
+        });
+        bugIdCounter = Math.max(bugIdCounter, bugId + 1);
+      });
+
+      if (Number.isInteger(draft.bug_id_counter)) {
+        bugIdCounter = Math.max(bugIdCounter, draft.bug_id_counter);
+      }
+      if (Number.isInteger(draft.screenshot_id_counter)) {
+        screenshotIdCounter = Math.max(screenshotIdCounter, draft.screenshot_id_counter);
+      }
+
+      handleDateModeChange();
+      renderBugs();
+      updateSummary();
+      showToast('Draft restored', 'success');
+      return true;
+    } catch (error) {
+      console.warn('Failed to restore saved draft', error);
+      return false;
+    } finally {
+      isRestoringDraft = false;
+    }
+  }
+
   // ── Coverage Rows ────────────────────────────────────────────────────────
   function addCoverageRow(area = '', scope = '') {
     const container = document.getElementById('coverageRows');
@@ -246,10 +557,12 @@
       </button>
     `;
     container.appendChild(row);
+    scheduleDraftSave();
   }
 
   function removeRow(btn) {
     btn.closest('.coverage-row').remove();
+    scheduleDraftSave();
   }
 
   // ── Bugs ─────────────────────────────────────────────────────────────────
@@ -258,8 +571,8 @@
     const bug = {
       id,
       index: bugs.length,
-      type: 'BUG',
-      severity: 'MEDIUM',
+      type: DEFAULT_ISSUE_TYPE,
+      severity: DEFAULT_SEVERITY,
       title: '',
       area: '',
       what: '',
@@ -278,12 +591,14 @@
       const el = document.getElementById(`bug-card-${id}`);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 50);
+    scheduleDraftSave();
   }
 
   function removeBug(id) {
     bugs = bugs.filter(b => b.id !== id);
     renderBugs();
     updateSummary();
+    scheduleDraftSave();
   }
 
   function moveBug(id, dir) {
@@ -293,11 +608,14 @@
     if (newIdx < 0 || newIdx >= bugs.length) return;
     [bugs[idx], bugs[newIdx]] = [bugs[newIdx], bugs[idx]];
     renderBugs();
+    scheduleDraftSave();
   }
 
   function saveBugField(id, field, value) {
     const bug = bugs.find(b => b.id === id);
     if (bug) {
+      if (field === 'type') value = normalizeIssueType(value);
+      if (field === 'severity') value = normalizeSeverity(value);
       bug[field] = value;
       if (field === 'type') {
         // Re-render to update severity state
@@ -307,6 +625,7 @@
         renderBugs();
       }
       updateSummary();
+      scheduleDraftSave();
     }
   }
 
@@ -344,14 +663,16 @@
   }
 
   function createBugCard(bug, displayIdx) {
+    bug.type = normalizeIssueType(bug.type);
+    bug.severity = normalizeSeverity(bug.severity);
+    const usesSeverity = issueTypeUsesSeverity(bug.type);
     const card = document.createElement('div');
-    card.className = `bug-card sev-${(bug.type === 'SUGGESTION' ? 'suggestion' : bug.severity).toLowerCase()}${bug.fixed ? ' is-fixed' : ''}`;
+    card.className = `bug-card sev-${(usesSeverity ? bug.severity : 'suggestion').toLowerCase()}${bug.fixed ? ' is-fixed' : ''}`;
     card.id = `bug-card-${bug.id}`;
 
-    const isSuggestion = bug.type === 'SUGGESTION';
-    const sevBadge = isSuggestion
-      ? `<span class="badge badge-suggestion">SUGGESTION</span>`
-      : `<span class="badge badge-${bug.severity.toLowerCase()}">&bull; ${bug.severity}</span>`;
+    const sevBadge = usesSeverity
+      ? `<span class="badge badge-${bug.severity.toLowerCase()}">&bull; ${bug.severity}</span>`
+      : `<span class="badge badge-suggestion">${escHtml(bug.type)}</span>`;
 
     card.innerHTML = `
       <div class="bug-card-header">
@@ -381,16 +702,13 @@
           <div class="form-group">
             <label>Bug Type</label>
             <select name="bug_type_${displayIdx}" onchange="saveBugField(${bug.id}, 'type', this.value)">
-              <option value="BUG" ${bug.type === 'BUG' ? 'selected' : ''}>BUG</option>
-              <option value="SUGGESTION" ${bug.type === 'SUGGESTION' ? 'selected' : ''}>SUGGESTION</option>
+              ${renderIssueTypeOptions(bug.type)}
             </select>
           </div>
           <div class="form-group">
             <label>Severity</label>
-            <select name="bug_severity_${displayIdx}" ${isSuggestion ? 'disabled' : ''} onchange="saveBugField(${bug.id}, 'severity', this.value)">
-              <option value="HIGH" ${bug.severity === 'HIGH' ? 'selected' : ''}>HIGH</option>
-              <option value="MEDIUM" ${bug.severity === 'MEDIUM' ? 'selected' : ''}>MEDIUM</option>
-              <option value="LOW" ${bug.severity === 'LOW' ? 'selected' : ''}>LOW</option>
+            <select name="bug_severity_${displayIdx}" ${usesSeverity ? '' : 'disabled'} onchange="saveBugField(${bug.id}, 'severity', this.value)">
+              ${renderSeverityOptions(bug.severity)}
             </select>
           </div>
         </div>
@@ -533,6 +851,7 @@
           </button>
         `;
         previewContainer.appendChild(prev);
+        scheduleDraftSave();
       };
       reader.readAsDataURL(file);
     });
@@ -544,6 +863,7 @@
       bug.screenshots = bug.screenshots.filter(s => s.id !== ssId);
     }
     btn.closest('.screenshot-preview-item').remove();
+    scheduleDraftSave();
   }
 
   // ── Form Submission ────────────────────────────────────────────────────
@@ -562,6 +882,8 @@
 
     formData.set('bug_count', bugs.length);
     bugs.forEach((bug, idx) => {
+      formData.set(`bug_type_${idx}`, normalizeIssueType(bug.type));
+      formData.set(`bug_severity_${idx}`, normalizeSeverity(bug.severity));
       formData.set(`bug_fixed_${idx}`, bug.fixed ? 'true' : 'false');
     });
     bugs.forEach((bug, idx) => {
@@ -632,8 +954,8 @@
           const id = bugIdCounter++;
           bugs.push({
             id,
-            type: b.type || 'BUG',
-            severity: b.severity || 'MEDIUM',
+            type: normalizeIssueType(b.type),
+            severity: normalizeSeverity(b.severity),
             title: b.title || '',
             area: b.area || '',
             what: b.what || '',
@@ -647,6 +969,7 @@
         });
         renderBugs();
         updateSummary();
+        scheduleDraftSave();
         showToast('JSON imported — add screenshots manually', 'success');
       } catch (err) {
         showToast('Invalid JSON file', 'error');

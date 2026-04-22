@@ -12,6 +12,7 @@
   --color-text-dim:    #5c6480;
   --color-accent:      #4a7cf5;
   --color-accent-hover:#5b8cff;
+  --color-critical:    #9f2a24;
   --color-high:        #d93025;
   --color-medium:      #e8622a;
   --color-low:         #f5a623;
@@ -379,6 +380,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 
 .bug-card:hover { border-color: var(--color-border-light); }
 
+.bug-card.sev-critical { border-left: 3px solid var(--color-critical); }
 .bug-card.sev-high   { border-left: 3px solid var(--color-high); }
 .bug-card.sev-medium { border-left: 3px solid var(--color-medium); }
 .bug-card.sev-low    { border-left: 3px solid var(--color-low); }
@@ -456,6 +458,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   color: white;
 }
 
+.badge-critical   { background: var(--color-critical); }
 .badge-high       { background: var(--color-high); }
 .badge-medium     { background: var(--color-medium); }
 .badge-low        { background: var(--color-low); color: #1a1a1a; }

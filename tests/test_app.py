@@ -11,6 +11,7 @@ from reportlab.pdfbase import pdfmetrics
 from werkzeug.datastructures import FileStorage
 
 from app import (
+    ISSUE_TYPE_OPTIONS,
     MARGIN,
     PAGE_H,
     PAGE_W,
@@ -118,6 +119,14 @@ class ReportGeneratorTests(unittest.TestCase):
         self.assertEqual(exported['report_end_date'], '2026-04-03')
         self.assertEqual(exported['report_date'], '')
 
+    def test_index_exposes_all_supported_issue_types(self):
+        response = self.client.get('/')
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        for issue_type in ISSUE_TYPE_OPTIONS:
+            self.assertIn(issue_type, html)
+
     def test_generate_rejects_invalid_date_range(self):
         response = self.client.post(
             '/generate',
@@ -134,6 +143,54 @@ class ReportGeneratorTests(unittest.TestCase):
         self.assertEqual(
             response.get_json()['error'],
             'End date must be the same as or later than start date.',
+        )
+
+    def test_generate_rejects_invalid_issue_type(self):
+        response = self.client.post(
+            '/generate',
+            data={
+                'app_name': 'Invalid Type',
+                'bug_count': '1',
+                'bug_type_0': 'TYPO',
+                'bug_severity_0': 'HIGH',
+                'bug_title_0': 'Bad type',
+                'bug_area_0': 'Form',
+                'bug_what_0': 'Invalid issue type',
+                'bug_where_0': 'Issue form',
+                'bug_how_0': 'Submit unsupported type',
+                'bug_description_0': 'Should fail validation',
+                'bug_fixed_0': 'false',
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()['error'],
+            'Issue type must be one of: BUG, SUGGESTION, UX ISSUE, CONTENT ISSUE.',
+        )
+
+    def test_generate_rejects_invalid_severity(self):
+        response = self.client.post(
+            '/generate',
+            data={
+                'app_name': 'Invalid Severity',
+                'bug_count': '1',
+                'bug_type_0': 'BUG',
+                'bug_severity_0': 'BLOCKER',
+                'bug_title_0': 'Bad severity',
+                'bug_area_0': 'Form',
+                'bug_what_0': 'Invalid severity',
+                'bug_where_0': 'Issue form',
+                'bug_how_0': 'Submit unsupported severity',
+                'bug_description_0': 'Should fail validation',
+                'bug_fixed_0': 'false',
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()['error'],
+            'Severity must be one of: CRITICAL, HIGH, MEDIUM, LOW.',
         )
 
     def test_generate_rejects_invalid_image_uploads(self):
@@ -336,32 +393,114 @@ class ReportGeneratorTests(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(os.path.exists(os.path.join(self.output_dir, payload['pdf_name'])))
 
-    def test_pdf_bug_sorting_orders_by_severity_then_suggestions(self):
+    def test_generate_persists_new_issue_types_in_json_export(self):
+        response = self.client.post(
+            '/generate',
+            data={
+                'app_name': 'New Types',
+                'bug_count': '2',
+                'bug_type_0': 'UX ISSUE',
+                'bug_severity_0': 'CRITICAL',
+                'bug_title_0': 'CTA is confusing',
+                'bug_area_0': 'Onboarding',
+                'bug_what_0': 'Primary action is hard to find',
+                'bug_where_0': 'Welcome screen',
+                'bug_how_0': 'Open onboarding',
+                'bug_description_0': 'UX label should persist',
+                'bug_fixed_0': 'false',
+                'bug_type_1': 'CONTENT ISSUE',
+                'bug_severity_1': 'LOW',
+                'bug_title_1': 'Typo in subscription copy',
+                'bug_area_1': 'Paywall',
+                'bug_what_1': 'Pricing text contains typo',
+                'bug_where_1': 'Subscription screen',
+                'bug_how_1': 'Open paywall',
+                'bug_description_1': 'Content label should persist',
+                'bug_fixed_1': 'true',
+                'bug_fixed_build_1': '2.1 (45)',
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        json_path = os.path.join(self.output_dir, payload['json_name'])
+        with open(json_path, 'r', encoding='utf-8') as fh:
+            exported = json.load(fh)
+
+        self.assertEqual(
+            [bug['type'] for bug in exported['bugs']],
+            ['UX ISSUE', 'CONTENT ISSUE'],
+        )
+        self.assertEqual(exported['bugs'][0]['severity'], 'CRITICAL')
+        self.assertEqual(exported['bugs'][1]['fixed_build'], '2.1 (45)')
+
+    def test_pdf_bug_sorting_orders_by_severity_then_non_bug_issue_types(self):
         bugs = [
+            {'type': 'BUG', 'severity': 'CRITICAL', 'title': 'Critical bug'},
             {'type': 'BUG', 'severity': 'LOW', 'title': 'Low bug'},
             {'type': 'SUGGESTION', 'severity': 'HIGH', 'title': 'Suggestion'},
             {'type': 'BUG', 'severity': 'HIGH', 'title': 'High bug'},
+            {'type': 'UX ISSUE', 'severity': 'MEDIUM', 'title': 'UX issue'},
             {'type': 'BUG', 'severity': 'MEDIUM', 'title': 'Medium bug'},
+            {'type': 'CONTENT ISSUE', 'severity': 'LOW', 'title': 'Content issue'},
             {'type': 'BUG', 'severity': 'HIGH', 'title': 'Second high bug'},
         ]
         uploaded_files = {
-            'bug_0': ['low.png'],
-            'bug_1': ['suggestion.png'],
-            'bug_2': ['high.png'],
-            'bug_3': ['medium.png'],
-            'bug_4': ['second-high.png'],
+            'bug_0': ['critical.png'],
+            'bug_1': ['low.png'],
+            'bug_2': ['suggestion.png'],
+            'bug_3': ['high.png'],
+            'bug_4': ['ux-issue.png'],
+            'bug_5': ['medium.png'],
+            'bug_6': ['content-issue.png'],
+            'bug_7': ['second-high.png'],
         }
 
         sorted_entries = sort_bug_entries_for_pdf(bugs, uploaded_files)
 
         self.assertEqual(
             [entry['bug']['title'] for entry in sorted_entries],
-            ['High bug', 'Second high bug', 'Medium bug', 'Low bug', 'Suggestion'],
+            ['Critical bug', 'High bug', 'Second high bug', 'Medium bug', 'Low bug', 'Suggestion', 'UX issue', 'Content issue'],
         )
         self.assertEqual(
             [entry['screenshots'] for entry in sorted_entries],
-            [['high.png'], ['second-high.png'], ['medium.png'], ['low.png'], ['suggestion.png']],
+            [['critical.png'], ['high.png'], ['second-high.png'], ['medium.png'], ['low.png'], ['suggestion.png'], ['ux-issue.png'], ['content-issue.png']],
         )
+
+    def test_bug_header_layout_uses_issue_type_label_for_non_bug_types(self):
+        pdf = canvas.Canvas(io.BytesIO())
+        writer = PageWriter(pdf, PAGE_W, PAGE_H, MARGIN)
+
+        layout = writer._bug_header_layout('UX ISSUE', 'HIGH', 'Title', 'Area')
+
+        self.assertFalse(layout['uses_severity'])
+        self.assertEqual(layout['num_label'], 'UX ISSUE')
+        self.assertEqual(layout['sev_label'], '')
+
+    def test_pdf_summary_badges_render_new_issue_type_labels(self):
+        pdf = canvas.Canvas(io.BytesIO())
+        writer = PageWriter(pdf, PAGE_W, PAGE_H, MARGIN)
+        badge_texts = []
+        writer._draw_pill = lambda _x, _y, text, *_args, **_kwargs: badge_texts.append(text) or 0
+
+        writer.draw_bug_summary_table([
+            {'type': 'UX ISSUE', 'severity': 'HIGH', 'title': 'UX issue', 'area': 'Home'},
+            {'type': 'CONTENT ISSUE', 'severity': 'LOW', 'title': 'Content issue', 'area': 'Paywall'},
+        ])
+
+        self.assertIn('UX ISSUE', badge_texts)
+        self.assertIn('CONTENT ISSUE', badge_texts)
+
+    def test_pdf_detail_header_renders_new_issue_type_without_severity_badge(self):
+        pdf = canvas.Canvas(io.BytesIO())
+        writer = PageWriter(pdf, PAGE_W, PAGE_H, MARGIN)
+        pill_texts = []
+        writer._draw_pill = lambda _x, _y, text, *_args, **_kwargs: pill_texts.append(text) or 0
+
+        writer.draw_bug_header(1, 'CONTENT ISSUE', 'LOW', 'Typo on paywall')
+
+        self.assertIn('CONTENT ISSUE #1', pill_texts)
+        self.assertNotIn('\u25cf LOW', pill_texts)
 
     def test_bug_start_height_depends_on_header_and_what_only(self):
         pdf = canvas.Canvas(io.BytesIO())

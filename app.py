@@ -33,6 +33,33 @@ ALLOWED_IMAGE_FORMATS = {
     'WEBP': '.webp',
 }
 
+DEFAULT_ISSUE_TYPE = 'BUG'
+DEFAULT_SEVERITY = 'MEDIUM'
+SEVERITY_OPTIONS = ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')
+ISSUE_TYPE_CONFIG = {
+    'BUG': {
+        'label': 'BUG',
+        'uses_severity': True,
+        'sort_group': 0,
+    },
+    'SUGGESTION': {
+        'label': 'SUGGESTION',
+        'uses_severity': False,
+        'sort_group': 1,
+    },
+    'UX ISSUE': {
+        'label': 'UX ISSUE',
+        'uses_severity': False,
+        'sort_group': 1,
+    },
+    'CONTENT ISSUE': {
+        'label': 'CONTENT ISSUE',
+        'uses_severity': False,
+        'sort_group': 1,
+    },
+}
+ISSUE_TYPE_OPTIONS = tuple(ISSUE_TYPE_CONFIG)
+
 SCREENSHOT_WEBP_QUALITIES = [90, 86, 82, 78, 74, 70, 66, 62]
 SCREENSHOT_RESIZE_SCALES = [0.92, 0.85, 0.78, 0.7, 0.62, 0.55]
 SCREENSHOT_RESIZE_QUALITIES = [80, 74, 68, 62, 56, 52]
@@ -46,6 +73,7 @@ CONTENT_W = PAGE_W - 2 * MARGIN
 # Colors
 COLOR_HEADER_BG      = colors.HexColor('#1b2742')
 COLOR_HEADER_BG_SOFT = colors.HexColor('#2a3a5d')
+COLOR_BUG_CRITICAL   = colors.HexColor('#9f2a24')
 COLOR_BUG_HIGH       = colors.HexColor('#c74b3b')
 COLOR_BUG_MEDIUM     = colors.HexColor('#dc8b35')
 COLOR_BUG_LOW        = colors.HexColor('#d9ae4c')
@@ -80,6 +108,7 @@ WWH_LABEL_COLORS = {
 }
 
 SEVERITY_COLORS = {
+    'CRITICAL':   COLOR_BUG_CRITICAL,
     'HIGH':       COLOR_BUG_HIGH,
     'MEDIUM':     COLOR_BUG_MEDIUM,
     'LOW':        COLOR_BUG_LOW,
@@ -89,6 +118,40 @@ SEVERITY_COLORS = {
 
 def get_severity_color(severity):
     return SEVERITY_COLORS.get(severity.upper(), COLOR_SUGGESTION)
+
+
+def normalize_issue_type(value, default=DEFAULT_ISSUE_TYPE):
+    issue_type = str(value or default).strip().upper()
+    if issue_type not in ISSUE_TYPE_CONFIG:
+        allowed = ', '.join(ISSUE_TYPE_OPTIONS)
+        raise ValueError(f'Issue type must be one of: {allowed}.')
+    return issue_type
+
+
+def normalize_severity(value, default=DEFAULT_SEVERITY):
+    severity = str(value or default).strip().upper()
+    if severity not in SEVERITY_OPTIONS:
+        allowed = ', '.join(SEVERITY_OPTIONS)
+        raise ValueError(f'Severity must be one of: {allowed}.')
+    return severity
+
+
+def get_issue_type_config(value):
+    return ISSUE_TYPE_CONFIG[normalize_issue_type(value)]
+
+
+def issue_type_uses_severity(value):
+    return get_issue_type_config(value)['uses_severity']
+
+
+def get_issue_type_label(value):
+    return get_issue_type_config(value)['label']
+
+
+def get_issue_badge_color(issue_type, severity):
+    if issue_type_uses_severity(issue_type):
+        return get_severity_color(normalize_severity(severity))
+    return COLOR_SUGGESTION
 
 
 def clean_text(text):
@@ -325,18 +388,20 @@ def build_cover_subtitle(app_name, app_desc):
 
 def bug_sort_key(entry):
     bug = entry['bug']
-    btype = (bug.get('type') or 'BUG').upper()
-    severity = (bug.get('severity') or '').upper()
+    btype = normalize_issue_type(bug.get('type'))
+    severity = normalize_severity(bug.get('severity'))
+    issue_type = get_issue_type_config(btype)
 
-    if btype == 'SUGGESTION':
-        return (1, 0, entry['original_index'])
+    if not issue_type['uses_severity']:
+        return (issue_type['sort_group'], 0, entry['original_index'])
 
     severity_rank = {
-        'HIGH': 0,
-        'MEDIUM': 1,
-        'LOW': 2,
-    }.get(severity, 3)
-    return (0, severity_rank, entry['original_index'])
+        'CRITICAL': 0,
+        'HIGH': 1,
+        'MEDIUM': 2,
+        'LOW': 3,
+    }.get(severity, 4)
+    return (issue_type['sort_group'], severity_rank, entry['original_index'])
 
 
 def sort_bug_entries_for_pdf(bugs, uploaded_files):
@@ -460,10 +525,13 @@ class PageWriter:
 
     def _bug_header_layout(self, btype, severity, title, area, is_fixed=False):
         x = self.margin
-        is_suggestion = str(btype).upper() == 'SUGGESTION'
-        num_label = 'SUGGESTION' if is_suggestion else 'BUG'
-        pill_color = COLOR_SUGGESTION if is_suggestion else COLOR_HEADER_BG_SOFT
-        sev_label = f'\u25cf {str(severity).upper()}' if (not is_suggestion and severity) else ''
+        btype = normalize_issue_type(btype)
+        severity = normalize_severity(severity)
+        issue_type = get_issue_type_config(btype)
+        uses_severity = issue_type['uses_severity']
+        num_label = issue_type['label']
+        pill_color = COLOR_HEADER_BG_SOFT if uses_severity else COLOR_SUGGESTION
+        sev_label = f'\u25cf {severity}' if uses_severity else ''
         cur_x = x + 14
         first_pill_w = self.c.stringWidth(f'{num_label} #88', 'Helvetica-Bold', 8) + 14
         cur_x += first_pill_w + 8
@@ -478,7 +546,7 @@ class PageWriter:
             'height': max(42, bar_h),
             'x': cur_x,
             'remaining_w': remaining_w,
-            'is_suggestion': is_suggestion,
+            'uses_severity': uses_severity,
             'num_label': num_label,
             'pill_color': pill_color,
             'sev_label': sev_label,
@@ -648,8 +716,8 @@ class PageWriter:
 
         for idx, bug in enumerate(bugs):
             is_fixed = bug.get('fixed', False)
-            btype = bug.get('type', 'BUG').upper()
-            severity = bug.get('severity', '').upper()
+            btype = normalize_issue_type(bug.get('type'))
+            severity = normalize_severity(bug.get('severity'))
             title = bug.get('title', '')
             area = bug.get('area', '')
             build = bug.get('fixed_build', '')
@@ -677,7 +745,7 @@ class PageWriter:
             else:
                 self.c.setFillColor(COLOR_TABLE_ALT if idx % 2 == 0 else COLOR_SURFACE_ALT)
             self.c.roundRect(box_x, self.y - row_h, box_w, row_h, 8, fill=1, stroke=0)
-            accent_color = COLOR_FIXED_HEADER if is_fixed else get_severity_color('SUGGESTION' if btype == 'SUGGESTION' else severity)
+            accent_color = COLOR_FIXED_HEADER if is_fixed else get_issue_badge_color(btype, severity)
             self.c.setFillColor(accent_color)
             self.c.roundRect(box_x, self.y - row_h, 5, row_h, 2.5, fill=1, stroke=0)
 
@@ -697,10 +765,9 @@ class PageWriter:
             cx += col_w[0]
 
             # Type/Severity badge — same style as header bar: 9pt font, dynamic width
-            badge_label = btype if btype == 'SUGGESTION' else severity
-            badge_color = get_severity_color(badge_label if btype == 'SUGGESTION' else severity)
-            dot = '\u25cf '
-            label_text = f'{dot}{badge_label}' if btype != 'SUGGESTION' else 'SUGGESTION'
+            uses_severity = issue_type_uses_severity(btype)
+            badge_color = get_issue_badge_color(btype, severity)
+            label_text = f'\u25cf {severity}' if uses_severity else get_issue_type_label(btype)
             by = self.y - row_h / 2 - 8
             self._draw_pill(cx + 4, by, label_text, badge_color, font_size=8)
             cx += col_w[1]
@@ -744,14 +811,13 @@ class PageWriter:
 
         cur_x = x + 14
 
-        # Left pill: "BUG #N" or "SUGGESTION #N"
-        is_suggestion = layout['is_suggestion']
+        # Left pill: "<TYPE> #N"
         num_label = f'{layout["num_label"]} #{num}'
         pill_y = self.y - 18
         nw = self._draw_pill(cur_x, pill_y, num_label, layout['pill_color'], font_size=8)
         cur_x += nw + 8
 
-        # Severity badge (BUG only, not SUGGESTION)
+        # Severity badge (only for issue types that use severity)
         if layout['sev_label']:
             sev_color = get_severity_color(severity)
             sw = self._draw_pill(cur_x, pill_y, layout['sev_label'], sev_color, font_size=8)
@@ -1190,8 +1256,8 @@ def build_pdf(data, uploaded_files, output_path):
     # ── Pages 2+: Bug Details ─────────────────────────────────────────────────
     for idx, entry in enumerate(sorted_bug_entries):
         bug = entry['bug']
-        btype = bug.get('type', 'BUG').upper()
-        severity = bug.get('severity', '').upper()
+        btype = normalize_issue_type(bug.get('type'))
+        severity = normalize_severity(bug.get('severity'))
         title = bug.get('title', '')
         area = bug.get('area', '')
         what = bug.get('what', '')
@@ -1244,7 +1310,20 @@ def build_pdf(data, uploaded_files, output_path):
 # ─── Routes ───────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template(
+        'index.html',
+        issue_type_options=[
+            {
+                'value': value,
+                'label': config['label'],
+                'uses_severity': config['uses_severity'],
+            }
+            for value, config in ISSUE_TYPE_CONFIG.items()
+        ],
+        default_issue_type=DEFAULT_ISSUE_TYPE,
+        default_severity=DEFAULT_SEVERITY,
+        severity_options=SEVERITY_OPTIONS,
+    )
 
 
 @app.route('/generate', methods=['POST'])
@@ -1294,8 +1373,8 @@ def generate():
         )
 
         for i in range(bug_count):
-            btype = request.form.get(f'bug_type_{i}', 'BUG')
-            severity = request.form.get(f'bug_severity_{i}', '')
+            btype = normalize_issue_type(request.form.get(f'bug_type_{i}', DEFAULT_ISSUE_TYPE))
+            severity = normalize_severity(request.form.get(f'bug_severity_{i}', DEFAULT_SEVERITY))
             title = request.form.get(f'bug_title_{i}', '')
             area = request.form.get(f'bug_area_{i}', '')
             what = clean_text(request.form.get(f'bug_what_{i}', ''))
