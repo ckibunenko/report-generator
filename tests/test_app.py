@@ -434,37 +434,55 @@ class ReportGeneratorTests(unittest.TestCase):
         self.assertEqual(exported['bugs'][0]['severity'], 'CRITICAL')
         self.assertEqual(exported['bugs'][1]['fixed_build'], '2.1 (45)')
 
-    def test_pdf_bug_sorting_orders_by_severity_then_non_bug_issue_types(self):
+    def test_pdf_bug_sorting_places_open_issues_before_fixed_issues(self):
         bugs = [
-            {'type': 'BUG', 'severity': 'CRITICAL', 'title': 'Critical bug'},
-            {'type': 'BUG', 'severity': 'LOW', 'title': 'Low bug'},
-            {'type': 'SUGGESTION', 'severity': 'HIGH', 'title': 'Suggestion'},
-            {'type': 'BUG', 'severity': 'HIGH', 'title': 'High bug'},
-            {'type': 'UX ISSUE', 'severity': 'MEDIUM', 'title': 'UX issue'},
-            {'type': 'BUG', 'severity': 'MEDIUM', 'title': 'Medium bug'},
-            {'type': 'CONTENT ISSUE', 'severity': 'LOW', 'title': 'Content issue'},
-            {'type': 'BUG', 'severity': 'HIGH', 'title': 'Second high bug'},
+            {'type': 'BUG', 'severity': 'LOW', 'title': 'Open low bug', 'fixed': False},
+            {'type': 'SUGGESTION', 'severity': 'HIGH', 'title': 'Open suggestion', 'fixed': False},
+            {'type': 'BUG', 'severity': 'CRITICAL', 'title': 'Fixed critical bug', 'fixed': True},
+            {'type': 'BUG', 'severity': 'HIGH', 'title': 'Open high bug', 'fixed': False},
+            {'type': 'UX ISSUE', 'severity': 'MEDIUM', 'title': 'Open UX issue', 'fixed': False},
+            {'type': 'BUG', 'severity': 'CRITICAL', 'title': 'Open critical bug', 'fixed': False},
+            {'type': 'BUG', 'severity': 'MEDIUM', 'title': 'Fixed medium bug', 'fixed': True},
+            {'type': 'CONTENT ISSUE', 'severity': 'LOW', 'title': 'Fixed content issue', 'fixed': True},
         ]
         uploaded_files = {
-            'bug_0': ['critical.png'],
-            'bug_1': ['low.png'],
-            'bug_2': ['suggestion.png'],
-            'bug_3': ['high.png'],
-            'bug_4': ['ux-issue.png'],
-            'bug_5': ['medium.png'],
-            'bug_6': ['content-issue.png'],
-            'bug_7': ['second-high.png'],
+            'bug_0': ['open-low.png'],
+            'bug_1': ['open-suggestion.png'],
+            'bug_2': ['fixed-critical.png'],
+            'bug_3': ['open-high.png'],
+            'bug_4': ['open-ux-issue.png'],
+            'bug_5': ['open-critical.png'],
+            'bug_6': ['fixed-medium.png'],
+            'bug_7': ['fixed-content-issue.png'],
         }
 
         sorted_entries = sort_bug_entries_for_pdf(bugs, uploaded_files)
 
         self.assertEqual(
             [entry['bug']['title'] for entry in sorted_entries],
-            ['Critical bug', 'High bug', 'Second high bug', 'Medium bug', 'Low bug', 'Suggestion', 'UX issue', 'Content issue'],
+            [
+                'Open critical bug',
+                'Open high bug',
+                'Open low bug',
+                'Open suggestion',
+                'Open UX issue',
+                'Fixed critical bug',
+                'Fixed medium bug',
+                'Fixed content issue',
+            ],
         )
         self.assertEqual(
             [entry['screenshots'] for entry in sorted_entries],
-            [['critical.png'], ['high.png'], ['second-high.png'], ['medium.png'], ['low.png'], ['suggestion.png'], ['ux-issue.png'], ['content-issue.png']],
+            [
+                ['open-critical.png'],
+                ['open-high.png'],
+                ['open-low.png'],
+                ['open-suggestion.png'],
+                ['open-ux-issue.png'],
+                ['fixed-critical.png'],
+                ['fixed-medium.png'],
+                ['fixed-content-issue.png'],
+            ],
         )
 
     def test_bug_header_layout_uses_issue_type_label_for_non_bug_types(self):

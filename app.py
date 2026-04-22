@@ -391,17 +391,23 @@ def bug_sort_key(entry):
     btype = normalize_issue_type(bug.get('type'))
     severity = normalize_severity(bug.get('severity'))
     issue_type = get_issue_type_config(btype)
-
-    if not issue_type['uses_severity']:
-        return (issue_type['sort_group'], 0, entry['original_index'])
-
+    is_fixed = bool(bug.get('fixed', False))
     severity_rank = {
         'CRITICAL': 0,
         'HIGH': 1,
         'MEDIUM': 2,
         'LOW': 3,
     }.get(severity, 4)
-    return (issue_type['sort_group'], severity_rank, entry['original_index'])
+
+    # Keep the report flow consistent in both summary and detail sections:
+    # open severity-based bugs first, then open suggestion-like issues,
+    # and move all fixed issues to the end with the same priority ordering.
+    return (
+        1 if is_fixed else 0,
+        issue_type['sort_group'],
+        severity_rank if issue_type['uses_severity'] else 4,
+        entry['original_index'],
+    )
 
 
 def sort_bug_entries_for_pdf(bugs, uploaded_files):
